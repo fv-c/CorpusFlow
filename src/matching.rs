@@ -1,7 +1,7 @@
 use crate::{
     config::MatchingConfig,
     descriptor::{BASELINE_DESCRIPTOR_DIMENSIONS, DescriptorVector},
-    index::CorpusIndex,
+    index::{CorpusGrainEntry, CorpusIndex},
     target::TargetAnalysis,
 };
 
@@ -9,6 +9,9 @@ use crate::{
 pub struct MatchingModel {
     pub alpha: f32,
     pub beta: f32,
+    pub transition_descriptor_weight: f32,
+    pub transition_seek_weight: f32,
+    pub source_switch_penalty: f32,
 }
 
 impl From<&MatchingConfig> for MatchingModel {
@@ -16,6 +19,9 @@ impl From<&MatchingConfig> for MatchingModel {
         Self {
             alpha: config.alpha,
             beta: config.beta,
+            transition_descriptor_weight: config.transition_descriptor_weight,
+            transition_seek_weight: config.transition_seek_weight,
+            source_switch_penalty: config.source_switch_penalty,
         }
     }
 }
@@ -24,6 +30,9 @@ impl From<&MatchingConfig> for MatchingModel {
 pub struct MatchCost {
     pub target_distance: f32,
     pub transition_cost: f32,
+    pub transition_descriptor_distance: f32,
+    pub transition_seek_distance: f32,
+    pub source_switch_cost: f32,
     pub total_cost: f32,
 }
 
@@ -40,21 +49,56 @@ pub struct MatchSequence {
     pub total_cost: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TransitionReference {
+    pub descriptor: DescriptorVector,
+    pub grain: CorpusGrainEntry,
+}
+
 impl MatchingModel {
     pub fn score_candidate(
         &self,
         target_descriptor: DescriptorVector,
         candidate_descriptor: DescriptorVector,
-        previous_descriptor: Option<DescriptorVector>,
+        previous: Option<TransitionReference>,
+        candidate_grain: &CorpusGrainEntry,
     ) -> MatchCost {
         let target_distance = squared_euclidean_distance(target_descriptor, candidate_descriptor);
-        let transition_cost = previous_descriptor
-            .map(|previous| squared_euclidean_distance(previous, candidate_descriptor))
-            .unwrap_or(0.0);
+        let (
+            transition_descriptor_distance,
+            transition_seek_distance,
+            source_switch_cost,
+            transition_cost,
+        ) = previous
+            .map(|previous| {
+                let descriptor_distance =
+                    squared_euclidean_distance(previous.descriptor, candidate_descriptor);
+                let seek_distance = normalized_seek_distance(previous.grain, candidate_grain);
+                let source_switch_cost =
+                    if previous.grain.source_index == candidate_grain.source_index {
+                        0.0
+                    } else {
+                        self.source_switch_penalty
+                    };
+                let transition_cost = self.transition_descriptor_weight * descriptor_distance
+                    + self.transition_seek_weight * seek_distance
+                    + source_switch_cost;
+
+                (
+                    descriptor_distance,
+                    seek_distance,
+                    source_switch_cost,
+                    transition_cost,
+                )
+            })
+            .unwrap_or((0.0, 0.0, 0.0, 0.0));
 
         MatchCost {
             target_distance,
             transition_cost,
+            transition_descriptor_distance,
+            transition_seek_distance,
+            source_switch_cost,
             total_cost: self.alpha * target_distance + self.beta * transition_cost,
         }
     }
@@ -99,20 +143,24 @@ fn select_best_candidate(
     target_descriptor: DescriptorVector,
     previous_grain_index: Option<usize>,
 ) -> (usize, MatchCost) {
-    let previous_descriptor =
-        previous_grain_index.map(|index| corpus_index.normalized_descriptors[index]);
+    let previous = previous_grain_index.map(|index| TransitionReference {
+        descriptor: corpus_index.normalized_descriptors[index],
+        grain: corpus_index.grains[index],
+    });
     let mut best_grain_index = 0;
     let mut best_cost = model.score_candidate(
         target_descriptor,
         corpus_index.normalized_descriptors[0],
-        previous_descriptor,
+        previous,
+        &corpus_index.grains[0],
     );
 
     for candidate_index in 1..corpus_index.normalized_descriptors.len() {
         let candidate_cost = model.score_candidate(
             target_descriptor,
             corpus_index.normalized_descriptors[candidate_index],
-            previous_descriptor,
+            previous,
+            &corpus_index.grains[candidate_index],
         );
 
         if candidate_cost.total_cost < best_cost.total_cost {
@@ -135,9 +183,22 @@ fn squared_euclidean_distance(left: DescriptorVector, right: DescriptorVector) -
     sum
 }
 
+fn normalized_seek_distance(previous: CorpusGrainEntry, candidate: &CorpusGrainEntry) -> f32 {
+    if previous.source_index != candidate.source_index {
+        return 1.0;
+    }
+
+    let expected_start = previous.start_frame + previous.len_frames;
+    let gap = candidate.start_frame.abs_diff(expected_start);
+    gap as f32 / previous.len_frames.max(1) as f32
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MatchSequence, MatchingModel, greedy_match, squared_euclidean_distance};
+    use super::{
+        MatchSequence, MatchingModel, TransitionReference, greedy_match, normalized_seek_distance,
+        squared_euclidean_distance,
+    };
     use crate::{
         descriptor::{DescriptorNormalization, DescriptorVector},
         index::{CorpusGrainEntry, CorpusIndex, CorpusSourceInfo},
@@ -157,6 +218,9 @@ mod tests {
         let model = MatchingModel {
             alpha: 1.0,
             beta: 10.0,
+            transition_descriptor_weight: 1.0,
+            transition_seek_weight: 1.0,
+            source_switch_penalty: 1.0,
         };
         let corpus_index = test_corpus_index(
             vec![
@@ -173,26 +237,68 @@ mod tests {
         assert_eq!(sequence.steps.len(), 1);
         assert_eq!(sequence.steps[0].selected_grain_index, 0);
         assert_eq!(sequence.steps[0].cost.transition_cost, 0.0);
+        assert_eq!(sequence.steps[0].cost.transition_seek_distance, 0.0);
     }
 
     #[test]
     fn greedy_match_applies_transition_cost_from_previous_grain() {
-        let corpus_index = test_corpus_index(
-            vec![
+        let corpus_index = CorpusIndex {
+            sources: vec![
+                CorpusSourceInfo {
+                    path: PathBuf::from("a.wav"),
+                    sample_rate: 1_000,
+                    total_frames: 200,
+                },
+                CorpusSourceInfo {
+                    path: PathBuf::from("b.wav"),
+                    sample_rate: 1_000,
+                    total_frames: 100,
+                },
+            ],
+            grains: vec![
+                CorpusGrainEntry {
+                    source_index: 0,
+                    start_frame: 0,
+                    len_frames: 100,
+                },
+                CorpusGrainEntry {
+                    source_index: 1,
+                    start_frame: 0,
+                    len_frames: 100,
+                },
+                CorpusGrainEntry {
+                    source_index: 0,
+                    start_frame: 100,
+                    len_frames: 100,
+                },
+            ],
+            raw_descriptors: vec![
                 DescriptorVector::new([0.0, 0.0, 0.0, 0.0, 0.0]),
                 DescriptorVector::new([10.0, 0.0, 0.0, 0.0, 0.0]),
+                DescriptorVector::new([6.0, 0.0, 0.0, 0.0, 0.0]),
             ],
-            100,
-        );
+            normalized_descriptors: vec![
+                DescriptorVector::new([0.0, 0.0, 0.0, 0.0, 0.0]),
+                DescriptorVector::new([10.0, 0.0, 0.0, 0.0, 0.0]),
+                DescriptorVector::new([6.0, 0.0, 0.0, 0.0, 0.0]),
+            ],
+            normalization: DescriptorNormalization {
+                mean: [0.0; crate::descriptor::BASELINE_DESCRIPTOR_DIMENSIONS],
+                scale: [1.0; crate::descriptor::BASELINE_DESCRIPTOR_DIMENSIONS],
+            },
+        };
         let target_analysis = test_target_analysis(vec![
             DescriptorVector::new([0.5, 0.0, 0.0, 0.0, 0.0]),
-            DescriptorVector::new([8.0, 0.0, 0.0, 0.0, 0.0]),
+            DescriptorVector::new([8.5, 0.0, 0.0, 0.0, 0.0]),
         ]);
 
         let without_transition = greedy_match(
             &MatchingModel {
                 alpha: 1.0,
                 beta: 0.0,
+                transition_descriptor_weight: 1.0,
+                transition_seek_weight: 1.0,
+                source_switch_penalty: 2.0,
             },
             &corpus_index,
             &target_analysis,
@@ -201,7 +307,10 @@ mod tests {
         let with_transition = greedy_match(
             &MatchingModel {
                 alpha: 1.0,
-                beta: 10.0,
+                beta: 2.0,
+                transition_descriptor_weight: 0.0,
+                transition_seek_weight: 1.0,
+                source_switch_penalty: 4.0,
             },
             &corpus_index,
             &target_analysis,
@@ -209,9 +318,89 @@ mod tests {
         .expect("match");
 
         assert_eq!(selected_grains(&without_transition), vec![0, 1]);
-        assert_eq!(selected_grains(&with_transition), vec![0, 0]);
+        assert_eq!(selected_grains(&with_transition), vec![0, 2]);
         assert!(without_transition.steps[1].cost.transition_cost > 0.0);
-        assert_eq!(with_transition.steps[1].cost.transition_cost, 0.0);
+        assert_eq!(with_transition.steps[1].cost.transition_seek_distance, 0.0);
+        assert_eq!(with_transition.steps[1].cost.source_switch_cost, 0.0);
+    }
+
+    #[test]
+    fn score_candidate_exposes_transition_components() {
+        let model = MatchingModel {
+            alpha: 1.0,
+            beta: 0.5,
+            transition_descriptor_weight: 2.0,
+            transition_seek_weight: 3.0,
+            source_switch_penalty: 4.0,
+        };
+        let previous = TransitionReference {
+            descriptor: DescriptorVector::new([1.0, 0.0, 0.0, 0.0, 0.0]),
+            grain: CorpusGrainEntry {
+                source_index: 0,
+                start_frame: 0,
+                len_frames: 100,
+            },
+        };
+        let candidate_grain = CorpusGrainEntry {
+            source_index: 1,
+            start_frame: 500,
+            len_frames: 100,
+        };
+
+        let cost = model.score_candidate(
+            DescriptorVector::new([3.0, 0.0, 0.0, 0.0, 0.0]),
+            DescriptorVector::new([2.0, 0.0, 0.0, 0.0, 0.0]),
+            Some(previous),
+            &candidate_grain,
+        );
+
+        assert_eq!(cost.target_distance, 1.0);
+        assert_eq!(cost.transition_descriptor_distance, 1.0);
+        assert_eq!(cost.transition_seek_distance, 1.0);
+        assert_eq!(cost.source_switch_cost, 4.0);
+        assert_eq!(cost.transition_cost, 9.0);
+        assert_eq!(cost.total_cost, 5.5);
+    }
+
+    #[test]
+    fn normalized_seek_distance_is_zero_for_adjacent_grains_in_same_source() {
+        let previous = CorpusGrainEntry {
+            source_index: 0,
+            start_frame: 100,
+            len_frames: 50,
+        };
+        let candidate = CorpusGrainEntry {
+            source_index: 0,
+            start_frame: 150,
+            len_frames: 50,
+        };
+
+        assert_eq!(normalized_seek_distance(previous, &candidate), 0.0);
+    }
+
+    #[test]
+    fn normalized_seek_distance_penalizes_large_jump_and_source_switch() {
+        let previous = CorpusGrainEntry {
+            source_index: 0,
+            start_frame: 100,
+            len_frames: 50,
+        };
+        let distant_same_source = CorpusGrainEntry {
+            source_index: 0,
+            start_frame: 250,
+            len_frames: 50,
+        };
+        let switched_source = CorpusGrainEntry {
+            source_index: 1,
+            start_frame: 0,
+            len_frames: 50,
+        };
+
+        assert_eq!(
+            normalized_seek_distance(previous, &distant_same_source),
+            2.0
+        );
+        assert_eq!(normalized_seek_distance(previous, &switched_source), 1.0);
     }
 
     #[test]
@@ -219,6 +408,9 @@ mod tests {
         let model = MatchingModel {
             alpha: 1.0,
             beta: 0.25,
+            transition_descriptor_weight: 1.0,
+            transition_seek_weight: 0.5,
+            source_switch_penalty: 0.25,
         };
         let corpus_index =
             test_corpus_index(vec![DescriptorVector::new([0.0, 0.0, 0.0, 0.0, 0.0])], 100);

@@ -32,7 +32,12 @@ impl AppConfig {
         if self.target.frame_size_ms == 0 || self.target.hop_size_ms == 0 {
             return Err("target frame_size_ms and hop_size_ms must be > 0".to_string());
         }
-        if !self.matching.alpha.is_finite() || !self.matching.beta.is_finite() {
+        if !self.matching.alpha.is_finite()
+            || !self.matching.beta.is_finite()
+            || !self.matching.transition_descriptor_weight.is_finite()
+            || !self.matching.transition_seek_weight.is_finite()
+            || !self.matching.source_switch_penalty.is_finite()
+        {
             return Err("matching weights must be finite".to_string());
         }
         if self.synthesis.output_hop_ms == 0 {
@@ -97,6 +102,9 @@ impl Default for TargetConfig {
 pub struct MatchingConfig {
     pub alpha: f32,
     pub beta: f32,
+    pub transition_descriptor_weight: f32,
+    pub transition_seek_weight: f32,
+    pub source_switch_penalty: f32,
 }
 
 impl Default for MatchingConfig {
@@ -104,6 +112,9 @@ impl Default for MatchingConfig {
         Self {
             alpha: 1.0,
             beta: 0.25,
+            transition_descriptor_weight: 1.0,
+            transition_seek_weight: 0.5,
+            source_switch_penalty: 0.25,
         }
     }
 }
@@ -183,6 +194,9 @@ mod tests {
         config.matching = MatchingConfig {
             alpha: f32::NAN,
             beta: 0.25,
+            transition_descriptor_weight: 1.0,
+            transition_seek_weight: 0.5,
+            source_switch_penalty: 0.25,
         };
 
         let error = config.validate().expect_err("config should be invalid");
