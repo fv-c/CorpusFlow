@@ -2,13 +2,14 @@ use std::path::Path;
 
 use crate::{
     audio::{AudioBuffer, MonoBuffer},
-    config::{PostConvolutionConfig, RenderMode, RenderingConfig, StereoRouting},
+    config::{AmbisonicsConfig, PostConvolutionConfig, RenderMode, RenderingConfig, StereoRouting},
 };
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct RenderPlan {
     pub mode: RenderMode,
     pub stereo_routing: StereoRouting,
+    pub ambisonics: AmbisonicsRenderPlan,
     pub post_convolution: PostConvolutionPlan,
 }
 
@@ -21,12 +22,32 @@ pub struct PostConvolutionPlan {
     pub normalize_output: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmbisonicsRenderPlan {
+    pub positioning_json_path: Option<String>,
+}
+
 impl From<&RenderingConfig> for RenderPlan {
     fn from(config: &RenderingConfig) -> Self {
         Self {
             mode: config.mode,
             stereo_routing: config.stereo_routing,
+            ambisonics: AmbisonicsRenderPlan::from(&config.ambisonics),
             post_convolution: PostConvolutionPlan::from(&config.post_convolution),
+        }
+    }
+}
+
+impl From<&AmbisonicsConfig> for AmbisonicsRenderPlan {
+    fn from(config: &AmbisonicsConfig) -> Self {
+        let positioning_json_path = config.positioning_json_path.trim();
+
+        Self {
+            positioning_json_path: if positioning_json_path.is_empty() {
+                None
+            } else {
+                Some(positioning_json_path.to_string())
+            },
         }
     }
 }
@@ -154,7 +175,9 @@ fn normalize_output_in_place(samples: &mut [f32]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{PostConvolutionPlan, RenderPlan, render_reconstruction};
+    use super::{
+        AmbisonicsRenderPlan, PostConvolutionPlan, RenderPlan, render_reconstruction,
+    };
     use crate::{
         audio::MonoBuffer,
         config::{RenderMode, StereoRouting},
@@ -165,6 +188,7 @@ mod tests {
         let plan = RenderPlan {
             mode: RenderMode::Mono,
             stereo_routing: StereoRouting::DuplicateMono,
+            ambisonics: disabled_ambisonics(),
             post_convolution: disabled_post_convolution(),
         };
         let reconstruction = MonoBuffer::new(48_000, vec![0.25, -0.5, 0.75]).expect("buffer");
@@ -180,6 +204,7 @@ mod tests {
         let plan = RenderPlan {
             mode: RenderMode::Stereo,
             stereo_routing: StereoRouting::DuplicateMono,
+            ambisonics: disabled_ambisonics(),
             post_convolution: disabled_post_convolution(),
         };
         let reconstruction = MonoBuffer::new(48_000, vec![0.25, -0.5]).expect("buffer");
@@ -195,6 +220,7 @@ mod tests {
         let plan = RenderPlan {
             mode: RenderMode::Mono,
             stereo_routing: StereoRouting::DuplicateMono,
+            ambisonics: disabled_ambisonics(),
             post_convolution: PostConvolutionPlan {
                 enabled: true,
                 impulse_response: vec![0.5, 0.5],
@@ -216,6 +242,7 @@ mod tests {
         let plan = RenderPlan {
             mode: RenderMode::Mono,
             stereo_routing: StereoRouting::DuplicateMono,
+            ambisonics: disabled_ambisonics(),
             post_convolution: PostConvolutionPlan {
                 enabled: true,
                 impulse_response: vec![0.5, 0.5],
@@ -239,6 +266,7 @@ mod tests {
         let plan = RenderPlan {
             mode: RenderMode::AmbisonicsReserved,
             stereo_routing: StereoRouting::DuplicateMono,
+            ambisonics: disabled_ambisonics(),
             post_convolution: disabled_post_convolution(),
         };
         let reconstruction = MonoBuffer::new(48_000, vec![0.25]).expect("buffer");
@@ -255,6 +283,12 @@ mod tests {
             dry_mix: 1.0,
             wet_mix: 1.0,
             normalize_output: true,
+        }
+    }
+
+    fn disabled_ambisonics() -> AmbisonicsRenderPlan {
+        AmbisonicsRenderPlan {
+            positioning_json_path: None,
         }
     }
 }

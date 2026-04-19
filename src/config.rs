@@ -1,3 +1,5 @@
+use std::{fs, path::Path};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,6 +187,7 @@ pub struct RenderingConfig {
     pub mode: RenderMode,
     pub stereo_routing: StereoRouting,
     pub post_convolution: PostConvolutionConfig,
+    pub ambisonics: AmbisonicsConfig,
 }
 
 impl Default for RenderingConfig {
@@ -193,22 +196,64 @@ impl Default for RenderingConfig {
             mode: RenderMode::Mono,
             stereo_routing: StereoRouting::DuplicateMono,
             post_convolution: PostConvolutionConfig::default(),
+            ambisonics: AmbisonicsConfig::default(),
         }
     }
 }
 
 impl RenderingConfig {
     pub fn validate(&self) -> Result<(), String> {
-        self.post_convolution.validate()
+        self.post_convolution.validate()?;
+        self.ambisonics.validate_for_mode(self.mode)
     }
 
     pub fn summary(&self) -> String {
         format!(
-            "mode={} stereo_routing={} convolution={}",
+            "mode={} stereo_routing={} ambisonics={} convolution={}",
             self.mode.as_str(),
             self.stereo_routing.as_str(),
+            self.ambisonics.summary(),
             self.post_convolution.summary(),
         )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AmbisonicsConfig {
+    pub positioning_json_path: String,
+}
+
+impl Default for AmbisonicsConfig {
+    fn default() -> Self {
+        Self {
+            positioning_json_path: String::new(),
+        }
+    }
+}
+
+impl AmbisonicsConfig {
+    pub fn validate_for_mode(&self, mode: RenderMode) -> Result<(), String> {
+        if mode != RenderMode::AmbisonicsReserved {
+            return Ok(());
+        }
+
+        let path = self.positioning_json_path.trim();
+        if path.is_empty() {
+            return Err(
+                "ambisonics rendering requires ambisonics.positioning_json_path".to_string(),
+            );
+        }
+
+        let spec = load_ambisonics_positioning_spec(path)?;
+        spec.validate()
+    }
+
+    pub fn summary(&self) -> String {
+        if self.positioning_json_path.trim().is_empty() {
+            return "off".to_string();
+        }
+
+        format!("json={}", self.positioning_json_path)
     }
 }
 
@@ -348,12 +393,131 @@ impl StereoRouting {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct AmbisonicsPositioningSpec {
+    trajectory: Vec<AmbisonicsTrajectoryWaypoint>,
+    jitter: AmbisonicsPositionJitter,
+}
+
+impl AmbisonicsPositioningSpec {
+    fn validate(&self) -> Result<(), String> {
+        if self.trajectory.is_empty() {
+            return Err(
+                "ambisonics positioning trajectory must contain at least one waypoint".to_string(),
+            );
+        }
+
+        let mut previous_time_ms = None;
+        for waypoint in &self.trajectory {
+            waypoint.validate()?;
+
+            if let Some(previous) = previous_time_ms {
+                if waypoint.time_ms <= previous {
+                    return Err(
+                        "ambisonics positioning trajectory time_ms must be strictly increasing"
+                            .to_string(),
+                    );
+                }
+            } else if waypoint.time_ms != 0 {
+                return Err(
+                    "ambisonics positioning trajectory must start at time_ms = 0".to_string(),
+                );
+            }
+
+            previous_time_ms = Some(waypoint.time_ms);
+        }
+
+        self.jitter.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct AmbisonicsTrajectoryWaypoint {
+    time_ms: u32,
+    azimuth_deg: f32,
+    elevation_deg: f32,
+    distance: f32,
+}
+
+impl AmbisonicsTrajectoryWaypoint {
+    fn validate(&self) -> Result<(), String> {
+        if !self.azimuth_deg.is_finite()
+            || !self.elevation_deg.is_finite()
+            || !self.distance.is_finite()
+        {
+            return Err("ambisonics positioning waypoints must contain finite values".to_string());
+        }
+        if !(-90.0..=90.0).contains(&self.elevation_deg) {
+            return Err(
+                "ambisonics positioning elevation_deg must be within -90.0..=90.0".to_string(),
+            );
+        }
+        if self.distance < 0.0 {
+            return Err("ambisonics positioning distance must be >= 0.0".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+struct AmbisonicsPositionJitter {
+    azimuth_deg: f32,
+    elevation_deg: f32,
+    distance: f32,
+}
+
+impl AmbisonicsPositionJitter {
+    fn validate(&self) -> Result<(), String> {
+        if !self.azimuth_deg.is_finite()
+            || !self.elevation_deg.is_finite()
+            || !self.distance.is_finite()
+        {
+            return Err("ambisonics positioning jitter must contain finite values".to_string());
+        }
+        if self.azimuth_deg < 0.0 || self.elevation_deg < 0.0 || self.distance < 0.0 {
+            return Err("ambisonics positioning jitter values must be >= 0.0".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+fn load_ambisonics_positioning_spec<P>(path: P) -> Result<AmbisonicsPositioningSpec, String>
+where
+    P: AsRef<Path>,
+{
+    let path = path.as_ref();
+    let json = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "failed to read ambisonics positioning JSON `{}`: {error}",
+            path.display()
+        )
+    })?;
+
+    serde_json::from_str(&json).map_err(|error| {
+        format!(
+            "failed to parse ambisonics positioning JSON `{}`: {error}",
+            path.display()
+        )
+    })
+}
+
 #[cfg(test)]
 mod tests {
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
     use super::{
         AppConfig, EnvelopeAdaptationMode, GainAdaptationMode, MatchingConfig, OverlapScheduleMode,
-        PostConvolutionConfig,
+        PostConvolutionConfig, RenderMode,
     };
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn default_config_is_valid() {
@@ -453,7 +617,7 @@ mod tests {
             summary.contains("synthesis(output_hop=50ms schedule=alternating irregularity=5ms)")
         );
         assert!(summary.contains(
-            "rendering(mode=mono stereo_routing=duplicate-mono convolution=on(ir_len=2 dry=0.5 wet=1 normalize=false))"
+            "rendering(mode=mono stereo_routing=duplicate-mono ambisonics=off convolution=on(ir_len=2 dry=0.5 wet=1 normalize=false))"
         ));
     }
 
@@ -479,5 +643,117 @@ mod tests {
             error,
             "enabled post_convolution requires a non-empty impulse_response"
         );
+    }
+
+    #[test]
+    fn ambisonics_requires_positioning_json_path() {
+        let mut config = AppConfig::default();
+        config.rendering.mode = RenderMode::AmbisonicsReserved;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "ambisonics rendering requires ambisonics.positioning_json_path"
+        );
+    }
+
+    #[test]
+    fn ambisonics_requires_positioning_json_with_trajectory_and_jitter() {
+        let fixture = TempFixtureDir::new();
+        let json_path = fixture.write_text_file(
+            "positioning.json",
+            r#"{
+  "trajectory": [],
+  "jitter": {
+    "azimuth_deg": 2.0,
+    "elevation_deg": 1.0,
+    "distance": 0.1
+  }
+}"#,
+        );
+        let mut config = AppConfig::default();
+        config.rendering.mode = RenderMode::AmbisonicsReserved;
+        config.rendering.ambisonics.positioning_json_path =
+            json_path.to_string_lossy().into_owned();
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "ambisonics positioning trajectory must contain at least one waypoint"
+        );
+    }
+
+    #[test]
+    fn ambisonics_accepts_valid_positioning_json() {
+        let fixture = TempFixtureDir::new();
+        let json_path = fixture.write_text_file(
+            "positioning.json",
+            r#"{
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "azimuth_deg": 0.0,
+      "elevation_deg": 0.0,
+      "distance": 1.0
+    },
+    {
+      "time_ms": 250,
+      "azimuth_deg": 30.0,
+      "elevation_deg": 10.0,
+      "distance": 1.2
+    }
+  ],
+  "jitter": {
+    "azimuth_deg": 2.0,
+    "elevation_deg": 1.0,
+    "distance": 0.1
+  }
+}"#,
+        );
+        let mut config = AppConfig::default();
+        config.rendering.mode = RenderMode::AmbisonicsReserved;
+        config.rendering.ambisonics.positioning_json_path =
+            json_path.to_string_lossy().into_owned();
+
+        assert_eq!(config.validate(), Ok(()));
+    }
+
+    struct TempFixtureDir {
+        path: PathBuf,
+    }
+
+    impl TempFixtureDir {
+        fn new() -> Self {
+            let unique = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be valid")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "corpusflow-config-{}-{}-{}",
+                std::process::id(),
+                nanos,
+                unique
+            ));
+
+            fs::create_dir_all(&path).expect("temp fixture dir should be created");
+            Self { path }
+        }
+
+        fn write_text_file(&self, relative: &str, contents: &str) -> PathBuf {
+            let path = self.path.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("fixture parent dir should be created");
+            }
+
+            fs::write(&path, contents).expect("fixture file should be written");
+            path
+        }
+    }
+
+    impl Drop for TempFixtureDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
     }
 }

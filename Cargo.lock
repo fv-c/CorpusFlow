@@ -107,6 +107,7 @@ dependencies = [
  "hound",
  "rustfft",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
