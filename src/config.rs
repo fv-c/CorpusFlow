@@ -288,6 +288,10 @@ impl AmbisonicsConfig {
             return Ok(());
         }
 
+        if self.order != 1 {
+            return Err("ambisonics rendering currently supports only order = 1".to_string());
+        }
+
         let path = self.positioning_json_path.trim();
         if path.is_empty() {
             return Err(
@@ -973,6 +977,44 @@ mod tests {
 
         let error = config.validate().expect_err("config should be invalid");
         assert_eq!(error, "ambisonics order must be >= 1");
+    }
+
+    #[test]
+    fn ambisonics_rejects_higher_order_runtime_request() {
+        let fixture = TempFixtureDir::new();
+        let json_path = fixture.write_text_file(
+            "positioning.json",
+            r#"{
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      }
+    }
+  ],
+  "jitter": {
+    "spread": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+    }
+  }
+}"#,
+        );
+        let mut config = AppConfig::default();
+        config.rendering.mode = RenderMode::AmbisonicsReserved;
+        config.rendering.ambisonics.order = 2;
+        config.rendering.ambisonics.positioning_json_path =
+            json_path.to_string_lossy().into_owned();
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "ambisonics rendering currently supports only order = 1"
+        );
     }
 
     #[test]

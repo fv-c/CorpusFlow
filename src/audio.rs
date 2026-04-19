@@ -177,13 +177,6 @@ where
     let path = path.as_ref();
     buffer.validate()?;
 
-    if buffer.channels != 1 && buffer.channels != 2 {
-        return Err(format!(
-            "WAV writer supports only mono or stereo output, found {} channels",
-            buffer.channels
-        ));
-    }
-
     let spec = WavSpec {
         channels: buffer.channels,
         sample_rate: buffer.sample_rate,

@@ -33,7 +33,7 @@
 - Carrier prosodic inheritance belongs to synthesis or micro-adaptation, not to corpus indexing or matching.
 - Global envelope transfer should be available as a deterministic baseline adaptation layer.
 - Optional convolution should remain a separate post-process after reconstruction, with dry/wet control, output safety normalization, and an explicit audio source from either the original target file or a separate WAV file.
-- Future ambisonics rendering should be enabled only through an explicit output convention (`order`, channel ordering, normalization) plus an external JSON positioning spec with waypoint time stamps, per-segment curve metadata, and separate jitter-cloud controls.
+- Ambisonics rendering now starts from an explicit FOA output convention (`order = 1`, ACN, SN3D/N3D) plus an external JSON positioning spec with waypoint time stamps, per-segment curve metadata, and separate jitter-cloud controls. Higher-order output remains a later extension.
 
 ## Active dependencies
 - `criterion` (dev): stable microbenchmark harness for descriptor extraction and later hot loops.

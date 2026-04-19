@@ -803,6 +803,133 @@ mod tests {
     }
 
     #[test]
+    fn run_writes_foa_ambisonics_output() {
+        let fixture = TempFixtureDir::new();
+        fixture.create_dir("corpus");
+        fixture.write_pcm16_wav(
+            "corpus/source.wav",
+            1,
+            &[4_000, -4_000, 8_000, -8_000, 4_000, -4_000, 8_000, -8_000],
+        );
+        let target_path = fixture.write_pcm16_wav(
+            "target.wav",
+            1,
+            &[
+                6_000, -6_000, 10_000, -10_000, 6_000, -6_000, 10_000, -10_000,
+            ],
+        );
+        let positioning_path = fixture.write_text_file(
+            "positioning.json",
+            r#"{
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "to_next": {
+        "curve": "linear"
+      }
+    },
+    {
+      "time_ms": 8,
+      "position": {
+        "x": 1.0,
+        "y": 0.0,
+        "z": 0.0
+      }
+    }
+  ],
+  "jitter": {
+    "per_grain": false,
+    "spread": {
+      "x": 0.0,
+      "y": 0.0,
+      "z": 0.0
+    }
+  }
+}"#,
+        );
+        let output_path = fixture.path().join("renders/foa.wav");
+        let config_path = fixture.write_text_file(
+            "foa.json",
+            &format!(
+                r#"{{
+  "corpus": {{
+    "root": "{}",
+    "grain_size_ms": 1,
+    "grain_hop_ms": 1,
+    "mono_only": true
+  }},
+  "target": {{
+    "path": "{}",
+    "frame_size_ms": 1,
+    "hop_size_ms": 1
+  }},
+  "matching": {{
+    "alpha": 1.0,
+    "beta": 0.25,
+    "transition_descriptor_weight": 1.0,
+    "transition_seek_weight": 0.5,
+    "source_switch_penalty": 0.25
+  }},
+  "micro_adaptation": {{
+    "gain": "off",
+    "envelope": "off"
+  }},
+  "synthesis": {{
+    "window": "hann",
+    "output_hop_ms": 1,
+    "overlap_schedule": "fixed",
+    "irregularity_ms": 0
+  }},
+  "rendering": {{
+    "output_sample_rate": 1000,
+    "mode": "ambisonics-reserved",
+    "stereo_routing": "duplicate-mono",
+    "post_convolution": {{
+      "enabled": false,
+      "source": "target",
+      "audio_path": "",
+      "dry_mix": 1.0,
+      "wet_mix": 1.0,
+      "normalize_output": true
+    }},
+    "ambisonics": {{
+      "order": 1,
+      "channel_ordering": "acn",
+      "normalization": "sn3d",
+      "positioning_json_path": "{}"
+    }}
+  }}
+}}"#,
+                fixture.path().join("corpus").display(),
+                target_path.display(),
+                positioning_path.display()
+            ),
+        );
+
+        let output = run([
+            "corpusflow",
+            "run",
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "--output",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .expect("run should succeed with foa ambisonics output");
+        let rendered = read_wav(&output_path).expect("rendered WAV should load");
+
+        assert!(output.contains("rendered_channels=4"));
+        assert_eq!(rendered.sample_rate, 1_000);
+        assert_eq!(rendered.channels, 4);
+        assert_eq!(rendered.frame_count(), 8);
+        assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
+    }
+
+    #[test]
     fn non_ambisonics_modes_ignore_positioning_json_path() {
         let positioning =
             resolve_ambisonics_positioning(RenderMode::Mono, "missing-ambisonics-positioning.json")

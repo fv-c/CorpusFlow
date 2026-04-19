@@ -106,6 +106,24 @@ fn writes_and_reads_back_stereo_output() {
 }
 
 #[test]
+fn writes_and_reads_back_foa_output() {
+    let fixture = TempFixtureDir::new();
+    let path = fixture.path().join("foa.wav");
+    let buffer = AudioBuffer::new(48_000, 4, vec![0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4])
+        .expect("buffer");
+
+    write_output_wav(&path, RenderMode::AmbisonicsReserved, &buffer).expect("write should succeed");
+    let roundtrip = read_wav(&path).expect("roundtrip should load");
+
+    assert_eq!(roundtrip.sample_rate, 48_000);
+    assert_eq!(roundtrip.channels, 4);
+    assert_eq!(
+        roundtrip.samples,
+        vec![0.1, 0.2, 0.3, 0.4, -0.1, -0.2, -0.3, -0.4]
+    );
+}
+
+#[test]
 fn rejects_output_channel_mismatch() {
     let fixture = TempFixtureDir::new();
     let path = fixture.path().join("mono.wav");

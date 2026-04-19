@@ -23,7 +23,7 @@ La baseline attuale e' pensata per essere semplice, deterministica e ispezionabi
 - Micro-adaptation: supporto a gain matching per-grain e carrier-envelope shaping globale.
 - Rendering: output `mono` o `stereo` con routing `duplicate-mono`.
 - Post-process: convoluzione opzionale con `dry/wet mix` e normalizzazione.
-- Ambisonics: interfaccia di configurazione presente, rendering audio non ancora implementato.
+- Ambisonics: baseline FOA disponibile con `order = 1`, `channel_ordering = "acn"` e `normalization = "sn3d"`/`"n3d"`.
 
 Architetturalmente il progetto mantiene gli stage separati in moduli distinti:
 
@@ -163,7 +163,7 @@ Esempio minimo:
 }
 ```
 
-Se `rendering.mode = "ambisonics-reserved"`, il baseline di configurazione esplicita `order = 1`, `channel_ordering = "acn"` e `normalization = "sn3d"`. In piu', `rendering.ambisonics.positioning_json_path` deve puntare a un JSON esterno con traiettoria del centro spaziale e jitter separato della nuvola, per esempio:
+Se `rendering.mode = "ambisonics-reserved"`, il baseline runtime corrente produce un WAV FOA a 4 canali in ordine ACN. La configurazione esplicita `order = 1`, `channel_ordering = "acn"` e `normalization = "sn3d"` oppure `"n3d"`. In piu', `rendering.ambisonics.positioning_json_path` deve puntare a un JSON esterno con traiettoria del centro spaziale e jitter separato della nuvola, per esempio:
 
 ```json
 {
@@ -234,7 +234,7 @@ Riferimenti:
 ## Limiti attuali
 
 - Il corpus baseline richiede WAV mono.
-- Ambisonics e' solo riservato a un'estensione futura.
+- L'output ambisonics corrente supporta solo FOA (`order = 1`).
 - La validazione della config controlla struttura e valori, ma non forza a priori l'esistenza dei path fino al comando `run`.
 - Le metriche di benchmark sono significative solo se confrontate sulla stessa macchina/toolchain.
 

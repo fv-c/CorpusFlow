@@ -64,12 +64,12 @@
 - `matching`: baseline target and transition cost weights. All values must be finite.
 - `micro_adaptation`: deterministic post-selection gain and carrier-envelope modes. Allowed values are `off`, `match-target-rms`, and `inherit-carrier-rms`. Carrier-envelope transfer follows the scheduled synthesis timeline, so it stays aligned even when `target.hop_size_ms` and `synthesis.output_hop_ms` differ.
 - `synthesis`: overlap-add windowing and scheduling. Current `window` baseline is `hann`.
-- `rendering`: output sample rate, output routing, and optional post-convolution. Corpus and target inputs are resampled to `output_sample_rate` before segmentation, analysis, and synthesis. When post-convolution is enabled, the convolution audio comes either from the original target file (`source = "target"`) or from an explicit WAV path (`source = "audio-file"` with `audio_path`). Ambisonics stays reserved behind explicit JSON positioning input.
+- `rendering`: output sample rate, output routing, and optional post-convolution. Corpus and target inputs are resampled to `output_sample_rate` before segmentation, analysis, and synthesis. When post-convolution is enabled, the convolution audio comes either from the original target file (`source = "target"`) or from an explicit WAV path (`source = "audio-file"` with `audio_path`). Ambisonics currently renders a first-order FOA WAV baseline behind the existing `ambisonics-reserved` mode name for compatibility.
 
 ## Ambisonics positioning JSON
 `rendering.ambisonics` carries the intended HOA output convention plus a separate JSON file owned by the rendering stage. The baseline keeps the deterministic center trajectory separate from the cloud jitter around that trajectory.
 
-- `order`: ambisonics order. Current baseline default is `1`.
+- `order`: ambisonics order. Current runtime supports only `1`.
 - `channel_ordering`: current baseline accepts `acn`.
 - `normalization`: current baseline accepts `sn3d` and `n3d`. The default is `sn3d`.
 - `positioning_json_path`: external trajectory+jitter JSON consumed by the rendering stage.
@@ -127,6 +127,7 @@
 - `post_convolution.dry_mix` and `wet_mix` must stay within `0.0..=1.0`
 - enabled `post_convolution` with `source = "audio-file"` requires a non-empty `audio_path`
 - `ambisonics.order >= 1`
+- `rendering.mode = "ambisonics-reserved"` requires `ambisonics.order = 1`
 - `rendering.mode = "ambisonics-reserved"` requires a readable positioning JSON with a non-empty strictly increasing trajectory starting at `time_ms = 0`
 - ambisonics waypoint positions must contain finite `x`, `y`, `z` values
 - ambisonics `default_curve` and `to_next.curve` must deserialize to known enum values
@@ -151,3 +152,8 @@
 - `rendering.post_convolution.source`: `target`, `audio-file`
 - `rendering.ambisonics.channel_ordering`: `acn`
 - `rendering.ambisonics.normalization`: `sn3d`, `n3d`
+
+## Current ambisonics output
+- `rendering.mode = "ambisonics-reserved"` currently emits a 4-channel FOA WAV in ACN channel order.
+- Supported conventions: `order = 1`, `channel_ordering = "acn"`, `normalization = "sn3d"` or `"n3d"`.
+- Higher ambisonics orders remain unimplemented and are rejected at config validation time.
