@@ -107,7 +107,7 @@ La CLI usa un file JSON esplicito. I campi principali sono:
 - `matching`: pesi del modello di costo
 - `micro_adaptation`: gain ed envelope post-selezione
 - `synthesis`: finestra e scheduling overlap-add
-- `rendering`: modalita' di uscita, convoluzione opzionale, hook ambisonics
+- `rendering`: modalita' di uscita, sample rate, convoluzione opzionale, hook ambisonics
 
 Esempio minimo:
 
@@ -142,11 +142,13 @@ Esempio minimo:
     "irregularity_ms": 0
   },
   "rendering": {
+    "output_sample_rate": 48000,
     "mode": "mono",
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
       "enabled": false,
-      "impulse_response": [],
+      "source": "target",
+      "audio_path": "",
       "dry_mix": 1.0,
       "wet_mix": 1.0,
       "normalize_output": true
@@ -154,6 +156,39 @@ Esempio minimo:
     "ambisonics": {
       "positioning_json_path": ""
     }
+  }
+}
+```
+
+Se `rendering.mode = "ambisonics-reserved"`, `rendering.ambisonics.positioning_json_path` deve puntare a un JSON esterno con traiettoria del centro spaziale e jitter separato della nuvola, per esempio:
+
+```json
+{
+  "space": "cartesian",
+  "loop": false,
+  "default_curve": "linear",
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": { "x": 0.0, "y": 1.0, "z": 0.0 },
+      "to_next": { "curve": "linear" }
+    },
+    {
+      "time_ms": 1200,
+      "position": { "x": 0.6, "y": 0.2, "z": 0.1 },
+      "to_next": { "curve": "catmull-rom", "tension": 0.5 }
+    },
+    {
+      "time_ms": 2600,
+      "position": { "x": -0.3, "y": 0.4, "z": 0.2 }
+    }
+  ],
+  "jitter": {
+    "mode": "gaussian",
+    "per_grain": true,
+    "seed": 42,
+    "spread": { "x": 0.08, "y": 0.08, "z": 0.04 },
+    "smoothing_ms": 80
   }
 }
 ```
