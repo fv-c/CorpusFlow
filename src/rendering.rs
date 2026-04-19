@@ -175,13 +175,20 @@ fn normalize_output_in_place(samples: &mut [f32]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AmbisonicsRenderPlan, PostConvolutionPlan, RenderPlan, render_reconstruction,
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
     };
+
+    use super::{AmbisonicsRenderPlan, PostConvolutionPlan, RenderPlan, render_reconstruction};
     use crate::{
         audio::MonoBuffer,
-        config::{RenderMode, StereoRouting},
+        config::{AppConfig, RenderMode, StereoRouting},
     };
+
+    static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
     #[test]
     fn render_reconstruction_keeps_mono_signal_in_mono_mode() {
@@ -276,6 +283,54 @@ mod tests {
         assert_eq!(error, "ambisonics rendering is reserved for a later phase");
     }
 
+    #[test]
+    fn render_reconstruction_attempts_ambisonics_with_example_json() {
+        let fixture = TempFixtureDir::new();
+        let json_path = fixture.write_text_file(
+            "ambisonics-positioning.json",
+            r#"{
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "azimuth_deg": -15.0,
+      "elevation_deg": 0.0,
+      "distance": 1.0
+    },
+    {
+      "time_ms": 120,
+      "azimuth_deg": 20.0,
+      "elevation_deg": 8.0,
+      "distance": 1.15
+    }
+  ],
+  "jitter": {
+    "azimuth_deg": 3.0,
+    "elevation_deg": 1.5,
+    "distance": 0.05
+  }
+}"#,
+        );
+        let mut config = AppConfig::default();
+        config.rendering.mode = RenderMode::AmbisonicsReserved;
+        config.rendering.ambisonics.positioning_json_path =
+            json_path.to_string_lossy().into_owned();
+        config
+            .validate()
+            .expect("ambisonics config should validate");
+
+        let plan = RenderPlan::from(&config.rendering);
+        assert_eq!(
+            plan.ambisonics.positioning_json_path,
+            Some(json_path.to_string_lossy().into_owned())
+        );
+
+        let reconstruction = MonoBuffer::new(48_000, vec![0.25, -0.5, 0.75]).expect("buffer");
+        let error = render_reconstruction(&plan, &reconstruction)
+            .expect_err("ambisonics render should stay reserved");
+
+        assert_eq!(error, "ambisonics rendering is reserved for a later phase");
+    }
+
     fn disabled_post_convolution() -> PostConvolutionPlan {
         PostConvolutionPlan {
             enabled: false,
@@ -289,6 +344,45 @@ mod tests {
     fn disabled_ambisonics() -> AmbisonicsRenderPlan {
         AmbisonicsRenderPlan {
             positioning_json_path: None,
+        }
+    }
+
+    struct TempFixtureDir {
+        path: PathBuf,
+    }
+
+    impl TempFixtureDir {
+        fn new() -> Self {
+            let unique = TEST_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be valid")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!(
+                "corpusflow-rendering-{}-{}-{}",
+                std::process::id(),
+                nanos,
+                unique
+            ));
+
+            fs::create_dir_all(&path).expect("temp fixture dir should be created");
+            Self { path }
+        }
+
+        fn write_text_file(&self, relative: &str, contents: &str) -> PathBuf {
+            let path = self.path.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("fixture parent dir should be created");
+            }
+
+            fs::write(&path, contents).expect("fixture file should be written");
+            path
+        }
+    }
+
+    impl Drop for TempFixtureDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
         }
     }
 }
