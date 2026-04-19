@@ -19,3 +19,15 @@ harness = false
 [[bench]]
 name = "overlap_add_synthesis"
 harness = false
+
+[[bench]]
+name = "candidate_scoring"
+harness = false
+
+[[bench]]
+name = "greedy_matching"
+harness = false
+
+[[bench]]
+name = "offline_render_pipeline"
+harness = false
