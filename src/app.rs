@@ -383,6 +383,9 @@ mod tests {
         assert!(output.contains("\"window\": \"hann\""));
         assert!(output.contains("\"mode\": \"mono\""));
         assert!(output.contains("\"source\": \"target\""));
+        assert!(output.contains("\"order\": 1"));
+        assert!(output.contains("\"channel_ordering\": \"acn\""));
+        assert!(output.contains("\"normalization\": \"sn3d\""));
     }
 
     #[test]

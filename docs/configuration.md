@@ -49,6 +49,9 @@
       "normalize_output": true
     },
     "ambisonics": {
+      "order": 1,
+      "channel_ordering": "acn",
+      "normalization": "sn3d",
       "positioning_json_path": ""
     }
   }
@@ -64,7 +67,12 @@
 - `rendering`: output sample rate, output routing, and optional post-convolution. Corpus and target inputs are resampled to `output_sample_rate` before segmentation, analysis, and synthesis. When post-convolution is enabled, the convolution audio comes either from the original target file (`source = "target"`) or from an explicit WAV path (`source = "audio-file"` with `audio_path`). Ambisonics stays reserved behind explicit JSON positioning input.
 
 ## Ambisonics positioning JSON
-`rendering.ambisonics.positioning_json_path` points to a separate JSON file owned by the rendering stage. The baseline schema keeps the deterministic center trajectory separate from the cloud jitter around that trajectory.
+`rendering.ambisonics` carries the intended HOA output convention plus a separate JSON file owned by the rendering stage. The baseline keeps the deterministic center trajectory separate from the cloud jitter around that trajectory.
+
+- `order`: ambisonics order. Current baseline default is `1`.
+- `channel_ordering`: current baseline accepts `acn`.
+- `normalization`: current baseline accepts `sn3d` and `n3d`. The default is `sn3d`.
+- `positioning_json_path`: external trajectory+jitter JSON consumed by the rendering stage.
 
 ```json
 {
@@ -118,6 +126,7 @@
 - `overlap_schedule = "alternating"` requires `irregularity_ms > 0` and `< output_hop_ms`
 - `post_convolution.dry_mix` and `wet_mix` must stay within `0.0..=1.0`
 - enabled `post_convolution` with `source = "audio-file"` requires a non-empty `audio_path`
+- `ambisonics.order >= 1`
 - `rendering.mode = "ambisonics-reserved"` requires a readable positioning JSON with a non-empty strictly increasing trajectory starting at `time_ms = 0`
 - ambisonics waypoint positions must contain finite `x`, `y`, `z` values
 - ambisonics `default_curve` and `to_next.curve` must deserialize to known enum values
@@ -140,3 +149,5 @@
 - `rendering.mode`: `mono`, `stereo`, `ambisonics-reserved`
 - `rendering.stereo_routing`: `duplicate-mono`
 - `rendering.post_convolution.source`: `target`, `audio-file`
+- `rendering.ambisonics.channel_ordering`: `acn`
+- `rendering.ambisonics.normalization`: `sn3d`, `n3d`

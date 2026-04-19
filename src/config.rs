@@ -258,12 +258,21 @@ impl RenderingConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AmbisonicsConfig {
+    #[serde(default = "default_ambisonics_order")]
+    pub order: u8,
+    #[serde(default)]
+    pub channel_ordering: AmbisonicsChannelOrdering,
+    #[serde(default)]
+    pub normalization: AmbisonicsNormalization,
     pub positioning_json_path: String,
 }
 
 impl Default for AmbisonicsConfig {
     fn default() -> Self {
         Self {
+            order: 1,
+            channel_ordering: AmbisonicsChannelOrdering::Acn,
+            normalization: AmbisonicsNormalization::Sn3d,
             positioning_json_path: String::new(),
         }
     }
@@ -271,6 +280,10 @@ impl Default for AmbisonicsConfig {
 
 impl AmbisonicsConfig {
     pub fn validate_for_mode(&self, mode: RenderMode) -> Result<(), String> {
+        if self.order == 0 {
+            return Err("ambisonics order must be >= 1".to_string());
+        }
+
         if mode != RenderMode::AmbisonicsReserved {
             return Ok(());
         }
@@ -291,8 +304,18 @@ impl AmbisonicsConfig {
             return "off".to_string();
         }
 
-        format!("json={}", self.positioning_json_path)
+        format!(
+            "order={} channel_ordering={} normalization={} json={}",
+            self.order,
+            self.channel_ordering.as_str(),
+            self.normalization.as_str(),
+            self.positioning_json_path
+        )
     }
+}
+
+fn default_ambisonics_order() -> u8 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -456,6 +479,48 @@ impl StereoRouting {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::DuplicateMono => "duplicate-mono",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmbisonicsChannelOrdering {
+    Acn,
+}
+
+impl Default for AmbisonicsChannelOrdering {
+    fn default() -> Self {
+        Self::Acn
+    }
+}
+
+impl AmbisonicsChannelOrdering {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acn => "acn",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmbisonicsNormalization {
+    Sn3d,
+    N3d,
+}
+
+impl Default for AmbisonicsNormalization {
+    fn default() -> Self {
+        Self::Sn3d
+    }
+}
+
+impl AmbisonicsNormalization {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sn3d => "sn3d",
+            Self::N3d => "n3d",
         }
     }
 }
@@ -709,6 +774,9 @@ mod tests {
         assert!(json.contains("\"mode\": \"mono\""));
         assert!(json.contains("\"output_sample_rate\": 48000"));
         assert!(json.contains("\"source\": \"target\""));
+        assert!(json.contains("\"order\": 1"));
+        assert!(json.contains("\"channel_ordering\": \"acn\""));
+        assert!(json.contains("\"normalization\": \"sn3d\""));
     }
 
     #[test]
@@ -896,6 +964,15 @@ mod tests {
             error,
             "enabled post_convolution with source=audio-file requires a non-empty audio_path"
         );
+    }
+
+    #[test]
+    fn ambisonics_rejects_zero_order() {
+        let mut config = AppConfig::default();
+        config.rendering.ambisonics.order = 0;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(error, "ambisonics order must be >= 1");
     }
 
     #[test]

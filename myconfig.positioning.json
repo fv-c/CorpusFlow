@@ -1,0 +1,72 @@
+{
+  "space": "cartesian",
+  "loop": false,
+  "default_curve": "linear",
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "to_next": {
+        "curve": "linear"
+      }
+    },
+    {
+      "time_ms": 1800,
+      "position": {
+        "x": 0.55,
+        "y": 0.45,
+        "z": 0.12
+      },
+      "to_next": {
+        "curve": "catmull-rom",
+        "tension": 0.45
+      }
+    },
+    {
+      "time_ms": 4200,
+      "position": {
+        "x": -0.35,
+        "y": 0.65,
+        "z": 0.18
+      },
+      "to_next": {
+        "curve": "catmull-rom",
+        "tension": 0.35
+      }
+    },
+    {
+      "time_ms": 6800,
+      "position": {
+        "x": -0.62,
+        "y": 0.15,
+        "z": -0.08
+      },
+      "to_next": {
+        "curve": "linear"
+      }
+    },
+    {
+      "time_ms": 9200,
+      "position": {
+        "x": 0.28,
+        "y": 0.82,
+        "z": -0.14
+      }
+    }
+  ],
+  "jitter": {
+    "mode": "gaussian",
+    "per_grain": true,
+    "seed": 42,
+    "spread": {
+      "x": 0.08,
+      "y": 0.08,
+      "z": 0.04
+    },
+    "smoothing_ms": 80
+  }
+}

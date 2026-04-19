@@ -154,13 +154,16 @@ Esempio minimo:
       "normalize_output": true
     },
     "ambisonics": {
+      "order": 1,
+      "channel_ordering": "acn",
+      "normalization": "sn3d",
       "positioning_json_path": ""
     }
   }
 }
 ```
 
-Se `rendering.mode = "ambisonics-reserved"`, `rendering.ambisonics.positioning_json_path` deve puntare a un JSON esterno con traiettoria del centro spaziale e jitter separato della nuvola, per esempio:
+Se `rendering.mode = "ambisonics-reserved"`, il baseline di configurazione esplicita `order = 1`, `channel_ordering = "acn"` e `normalization = "sn3d"`. In piu', `rendering.ambisonics.positioning_json_path` deve puntare a un JSON esterno con traiettoria del centro spaziale e jitter separato della nuvola, per esempio:
 
 ```json
 {

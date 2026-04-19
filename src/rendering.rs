@@ -3,8 +3,9 @@ use std::path::Path;
 use crate::{
     audio::{AudioBuffer, MonoBuffer},
     config::{
-        AmbisonicsConfig, AmbisonicsPositioningSpec, PostConvolutionConfig, RenderMode,
-        RenderingConfig, StereoRouting,
+        AmbisonicsChannelOrdering, AmbisonicsConfig, AmbisonicsNormalization,
+        AmbisonicsPositioningSpec, PostConvolutionConfig, RenderMode, RenderingConfig,
+        StereoRouting,
     },
 };
 
@@ -27,6 +28,9 @@ pub struct PostConvolutionPlan {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AmbisonicsRenderPlan {
+    pub order: u8,
+    pub channel_ordering: AmbisonicsChannelOrdering,
+    pub normalization: AmbisonicsNormalization,
     pub positioning_json_path: Option<String>,
     pub positioning: Option<AmbisonicsPositioningSpec>,
 }
@@ -47,6 +51,9 @@ impl From<&AmbisonicsConfig> for AmbisonicsRenderPlan {
         let positioning_json_path = config.positioning_json_path.trim();
 
         Self {
+            order: config.order,
+            channel_ordering: config.channel_ordering,
+            normalization: config.normalization,
             positioning_json_path: if positioning_json_path.is_empty() {
                 None
             } else {
@@ -339,6 +346,9 @@ mod tests {
             .expect("ambisonics config should validate");
 
         let plan = RenderPlan::from(&config.rendering);
+        assert_eq!(plan.ambisonics.order, 1);
+        assert_eq!(plan.ambisonics.channel_ordering.as_str(), "acn");
+        assert_eq!(plan.ambisonics.normalization.as_str(), "sn3d");
         assert_eq!(
             plan.ambisonics.positioning_json_path,
             Some(json_path.to_string_lossy().into_owned())
@@ -363,6 +373,9 @@ mod tests {
 
     fn disabled_ambisonics() -> AmbisonicsRenderPlan {
         AmbisonicsRenderPlan {
+            order: 1,
+            channel_ordering: crate::config::AmbisonicsChannelOrdering::Acn,
+            normalization: crate::config::AmbisonicsNormalization::Sn3d,
             positioning_json_path: None,
             positioning: None,
         }
