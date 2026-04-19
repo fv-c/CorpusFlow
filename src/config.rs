@@ -3,6 +3,7 @@ use std::{fs, path::Path};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppConfig {
     pub corpus: CorpusConfig,
     pub target: TargetConfig,
@@ -26,6 +27,30 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    pub fn from_json_str(json: &str) -> Result<Self, String> {
+        let config = serde_json::from_str::<Self>(json)
+            .map_err(|error| format!("failed to parse config JSON: {error}"))?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn from_json_file<P>(path: P) -> Result<Self, String>
+    where
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        let json = fs::read_to_string(path)
+            .map_err(|error| format!("failed to read config `{}`: {error}", path.display()))?;
+
+        Self::from_json_str(&json)
+            .map_err(|error| format!("invalid config `{}`: {error}", path.display()))
+    }
+
+    pub fn to_pretty_json(&self) -> Result<String, String> {
+        serde_json::to_string_pretty(self)
+            .map_err(|error| format!("failed to serialize config JSON: {error}"))
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.corpus.grain_size_ms == 0 {
             return Err("corpus grain_size_ms must be > 0".to_string());
@@ -92,6 +117,7 @@ impl AppConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CorpusConfig {
     pub root: String,
     pub grain_size_ms: u32,
@@ -111,6 +137,7 @@ impl Default for CorpusConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TargetConfig {
     pub path: String,
     pub frame_size_ms: u32,
@@ -128,6 +155,7 @@ impl Default for TargetConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MatchingConfig {
     pub alpha: f32,
     pub beta: f32,
@@ -149,6 +177,7 @@ impl Default for MatchingConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MicroAdaptationConfig {
     pub gain: GainAdaptationMode,
     pub envelope: EnvelopeAdaptationMode,
@@ -164,6 +193,7 @@ impl Default for MicroAdaptationConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SynthesisConfig {
     pub window: WindowKind,
     pub output_hop_ms: u32,
@@ -183,6 +213,7 @@ impl Default for SynthesisConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RenderingConfig {
     pub mode: RenderMode,
     pub stereo_routing: StereoRouting,
@@ -219,6 +250,7 @@ impl RenderingConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AmbisonicsConfig {
     pub positioning_json_path: String,
 }
@@ -258,6 +290,7 @@ impl AmbisonicsConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PostConvolutionConfig {
     pub enabled: bool,
     pub impulse_response: Vec<f32>,
@@ -314,11 +347,13 @@ impl PostConvolutionConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum WindowKind {
     Hann,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum OverlapScheduleMode {
     Fixed,
     Alternating,
@@ -334,6 +369,7 @@ impl OverlapScheduleMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum GainAdaptationMode {
     Off,
     MatchTargetRms,
@@ -349,6 +385,7 @@ impl GainAdaptationMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum EnvelopeAdaptationMode {
     Off,
     InheritCarrierRms,
@@ -364,6 +401,7 @@ impl EnvelopeAdaptationMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum RenderMode {
     Mono,
     Stereo,
@@ -381,6 +419,7 @@ impl RenderMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum StereoRouting {
     DuplicateMono,
 }
@@ -394,6 +433,7 @@ impl StereoRouting {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AmbisonicsPositioningSpec {
     trajectory: Vec<AmbisonicsTrajectoryWaypoint>,
     jitter: AmbisonicsPositionJitter,
@@ -432,6 +472,7 @@ impl AmbisonicsPositioningSpec {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AmbisonicsTrajectoryWaypoint {
     time_ms: u32,
     azimuth_deg: f32,
@@ -461,6 +502,7 @@ impl AmbisonicsTrajectoryWaypoint {
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct AmbisonicsPositionJitter {
     azimuth_deg: f32,
     elevation_deg: f32,
@@ -523,6 +565,71 @@ mod tests {
     fn default_config_is_valid() {
         let config = AppConfig::default();
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn default_config_roundtrips_through_pretty_json() {
+        let config = AppConfig::default();
+        let json = config.to_pretty_json().expect("config should serialize");
+        let parsed = AppConfig::from_json_str(&json).expect("config should parse");
+
+        assert_eq!(parsed, config);
+        assert!(json.contains("\"window\": \"hann\""));
+        assert!(json.contains("\"mode\": \"mono\""));
+    }
+
+    #[test]
+    fn config_json_rejects_unknown_fields() {
+        let error = AppConfig::from_json_str(
+            r#"{
+  "corpus": {
+    "root": "",
+    "grain_size_ms": 100,
+    "grain_hop_ms": 50,
+    "mono_only": true
+  },
+  "target": {
+    "path": "",
+    "frame_size_ms": 100,
+    "hop_size_ms": 50
+  },
+  "matching": {
+    "alpha": 1.0,
+    "beta": 0.25,
+    "transition_descriptor_weight": 1.0,
+    "transition_seek_weight": 0.5,
+    "source_switch_penalty": 0.25
+  },
+  "micro_adaptation": {
+    "gain": "off",
+    "envelope": "off"
+  },
+  "synthesis": {
+    "window": "hann",
+    "output_hop_ms": 50,
+    "overlap_schedule": "fixed",
+    "irregularity_ms": 0
+  },
+  "rendering": {
+    "mode": "mono",
+    "stereo_routing": "duplicate-mono",
+    "post_convolution": {
+      "enabled": false,
+      "impulse_response": [],
+      "dry_mix": 1.0,
+      "wet_mix": 1.0,
+      "normalize_output": true
+    },
+    "ambisonics": {
+      "positioning_json_path": ""
+    }
+  },
+  "unexpected": true
+}"#,
+        )
+        .expect_err("unknown fields should fail");
+
+        assert!(error.contains("unknown field `unexpected`"));
     }
 
     #[test]
