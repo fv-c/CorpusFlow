@@ -18,7 +18,7 @@
 - `index.rs`: exact corpus grain index and descriptor storage
 - `target.rs`: target loading, frame planning, mono analysis, descriptor pass
 - `descriptor.rs`: descriptor spec skeleton
-- `matching.rs`: matching model skeleton
+- `matching.rs`: greedy baseline matcher with target and transition costs
 - `synthesis.rs`: synthesis skeleton
 - `rendering.rs`: output/render skeleton
 
