@@ -4,6 +4,7 @@ pub mod cli;
 pub mod config;
 pub mod corpus;
 pub mod descriptor;
+pub mod index;
 pub mod matching;
 pub mod rendering;
 pub mod synthesis;

@@ -15,6 +15,7 @@
 - `cli.rs`: minimal command parsing
 - `config.rs`: serializable baseline configuration
 - `corpus.rs`: corpus ingestion and fixed-grid grain planning
+- `index.rs`: exact corpus grain index and descriptor storage
 - `target.rs`: target analysis skeleton
 - `descriptor.rs`: descriptor spec skeleton
 - `matching.rs`: matching model skeleton
