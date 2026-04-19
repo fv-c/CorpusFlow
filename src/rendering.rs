@@ -1,18 +1,64 @@
 use std::path::Path;
 
 use crate::{
-    audio::AudioBuffer,
-    config::{RenderMode, RenderingConfig},
+    audio::{AudioBuffer, MonoBuffer},
+    config::{PostConvolutionConfig, RenderMode, RenderingConfig, StereoRouting},
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RenderPlan {
     pub mode: RenderMode,
+    pub stereo_routing: StereoRouting,
+    pub post_convolution: PostConvolutionPlan,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct PostConvolutionPlan {
+    pub enabled: bool,
+    pub impulse_response: Vec<f32>,
+    pub dry_mix: f32,
+    pub wet_mix: f32,
+    pub normalize_output: bool,
 }
 
 impl From<&RenderingConfig> for RenderPlan {
     fn from(config: &RenderingConfig) -> Self {
-        Self { mode: config.mode }
+        Self {
+            mode: config.mode,
+            stereo_routing: config.stereo_routing,
+            post_convolution: PostConvolutionPlan::from(&config.post_convolution),
+        }
+    }
+}
+
+impl From<&PostConvolutionConfig> for PostConvolutionPlan {
+    fn from(config: &PostConvolutionConfig) -> Self {
+        Self {
+            enabled: config.enabled,
+            impulse_response: config.impulse_response.clone(),
+            dry_mix: config.dry_mix,
+            wet_mix: config.wet_mix,
+            normalize_output: config.normalize_output,
+        }
+    }
+}
+
+pub fn render_reconstruction(
+    plan: &RenderPlan,
+    reconstruction: &MonoBuffer,
+) -> Result<AudioBuffer, String> {
+    let processed_samples = apply_post_convolution(&plan.post_convolution, &reconstruction.samples);
+
+    match plan.mode {
+        RenderMode::Mono => AudioBuffer::new(reconstruction.sample_rate, 1, processed_samples),
+        RenderMode::Stereo => AudioBuffer::new(
+            reconstruction.sample_rate,
+            2,
+            route_stereo(plan.stereo_routing, &processed_samples),
+        ),
+        RenderMode::AmbisonicsReserved => {
+            Err("ambisonics rendering is reserved for a later phase".to_string())
+        }
     }
 }
 
@@ -33,5 +79,182 @@ where
             Err("ambisonics rendering is reserved for a later phase".to_string())
         }
         _ => crate::audio::write_wav(path, buffer),
+    }
+}
+
+fn route_stereo(routing: StereoRouting, mono_samples: &[f32]) -> Vec<f32> {
+    match routing {
+        StereoRouting::DuplicateMono => {
+            let mut samples = Vec::with_capacity(mono_samples.len() * 2);
+            for &sample in mono_samples {
+                samples.push(sample);
+                samples.push(sample);
+            }
+            samples
+        }
+    }
+}
+
+fn apply_post_convolution(plan: &PostConvolutionPlan, dry_signal: &[f32]) -> Vec<f32> {
+    if !plan.enabled {
+        return dry_signal.to_vec();
+    }
+
+    if dry_signal.is_empty() {
+        return Vec::new();
+    }
+
+    let wet_signal = convolve(dry_signal, &plan.impulse_response);
+    let mut mixed = vec![0.0; wet_signal.len().max(dry_signal.len())];
+
+    for (index, &sample) in dry_signal.iter().enumerate() {
+        mixed[index] += sample * plan.dry_mix;
+    }
+    for (index, &sample) in wet_signal.iter().enumerate() {
+        mixed[index] += sample * plan.wet_mix;
+    }
+
+    if plan.normalize_output {
+        normalize_output_in_place(&mut mixed);
+    }
+
+    mixed
+}
+
+fn convolve(signal: &[f32], impulse_response: &[f32]) -> Vec<f32> {
+    if signal.is_empty() || impulse_response.is_empty() {
+        return Vec::new();
+    }
+
+    let mut output = vec![0.0; signal.len() + impulse_response.len() - 1];
+
+    for (signal_index, &signal_sample) in signal.iter().enumerate() {
+        for (impulse_index, &impulse_sample) in impulse_response.iter().enumerate() {
+            output[signal_index + impulse_index] += signal_sample * impulse_sample;
+        }
+    }
+
+    output
+}
+
+fn normalize_output_in_place(samples: &mut [f32]) {
+    let peak = samples.iter().fold(0.0_f32, |current_peak, sample| {
+        current_peak.max(sample.abs())
+    });
+
+    if peak <= 1.0 {
+        return;
+    }
+
+    let scale = 1.0 / peak;
+    for sample in samples {
+        *sample *= scale;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PostConvolutionPlan, RenderPlan, render_reconstruction};
+    use crate::{
+        audio::MonoBuffer,
+        config::{RenderMode, StereoRouting},
+    };
+
+    #[test]
+    fn render_reconstruction_keeps_mono_signal_in_mono_mode() {
+        let plan = RenderPlan {
+            mode: RenderMode::Mono,
+            stereo_routing: StereoRouting::DuplicateMono,
+            post_convolution: disabled_post_convolution(),
+        };
+        let reconstruction = MonoBuffer::new(48_000, vec![0.25, -0.5, 0.75]).expect("buffer");
+
+        let rendered = render_reconstruction(&plan, &reconstruction).expect("rendering");
+
+        assert_eq!(rendered.channels, 1);
+        assert_eq!(rendered.samples, vec![0.25, -0.5, 0.75]);
+    }
+
+    #[test]
+    fn render_reconstruction_duplicates_mono_signal_for_stereo_output() {
+        let plan = RenderPlan {
+            mode: RenderMode::Stereo,
+            stereo_routing: StereoRouting::DuplicateMono,
+            post_convolution: disabled_post_convolution(),
+        };
+        let reconstruction = MonoBuffer::new(48_000, vec![0.25, -0.5]).expect("buffer");
+
+        let rendered = render_reconstruction(&plan, &reconstruction).expect("rendering");
+
+        assert_eq!(rendered.channels, 2);
+        assert_eq!(rendered.samples, vec![0.25, 0.25, -0.5, -0.5]);
+    }
+
+    #[test]
+    fn render_reconstruction_applies_post_convolution_and_extends_tail() {
+        let plan = RenderPlan {
+            mode: RenderMode::Mono,
+            stereo_routing: StereoRouting::DuplicateMono,
+            post_convolution: PostConvolutionPlan {
+                enabled: true,
+                impulse_response: vec![0.5, 0.5],
+                dry_mix: 0.0,
+                wet_mix: 1.0,
+                normalize_output: false,
+            },
+        };
+        let reconstruction = MonoBuffer::new(1_000, vec![1.0, 0.0]).expect("buffer");
+
+        let rendered = render_reconstruction(&plan, &reconstruction).expect("rendering");
+
+        assert_eq!(rendered.channels, 1);
+        assert_eq!(rendered.samples, vec![0.5, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn render_reconstruction_normalizes_post_convolution_peak() {
+        let plan = RenderPlan {
+            mode: RenderMode::Mono,
+            stereo_routing: StereoRouting::DuplicateMono,
+            post_convolution: PostConvolutionPlan {
+                enabled: true,
+                impulse_response: vec![0.5, 0.5],
+                dry_mix: 1.0,
+                wet_mix: 1.0,
+                normalize_output: true,
+            },
+        };
+        let reconstruction = MonoBuffer::new(1_000, vec![1.0, 0.0]).expect("buffer");
+
+        let rendered = render_reconstruction(&plan, &reconstruction).expect("rendering");
+
+        let expected = [1.0, 1.0 / 3.0, 0.0];
+        for (actual, expected) in rendered.samples.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn render_reconstruction_rejects_reserved_ambisonics_mode() {
+        let plan = RenderPlan {
+            mode: RenderMode::AmbisonicsReserved,
+            stereo_routing: StereoRouting::DuplicateMono,
+            post_convolution: disabled_post_convolution(),
+        };
+        let reconstruction = MonoBuffer::new(48_000, vec![0.25]).expect("buffer");
+
+        let error = render_reconstruction(&plan, &reconstruction).expect_err("rendering must fail");
+
+        assert_eq!(error, "ambisonics rendering is reserved for a later phase");
+    }
+
+    fn disabled_post_convolution() -> PostConvolutionPlan {
+        PostConvolutionPlan {
+            enabled: false,
+            impulse_response: Vec::new(),
+            dry_mix: 1.0,
+            wet_mix: 1.0,
+            normalize_output: true,
+        }
     }
 }

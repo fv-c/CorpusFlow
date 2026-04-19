@@ -65,6 +65,7 @@ impl AppConfig {
                 );
             }
         }
+        self.rendering.validate()?;
 
         Ok(())
     }
@@ -83,7 +84,7 @@ impl AppConfig {
             self.synthesis.output_hop_ms,
             self.synthesis.overlap_schedule.as_str(),
             self.synthesis.irregularity_ms,
-            self.rendering.mode.as_str(),
+            self.rendering.summary(),
         )
     }
 }
@@ -182,13 +183,88 @@ impl Default for SynthesisConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderingConfig {
     pub mode: RenderMode,
+    pub stereo_routing: StereoRouting,
+    pub post_convolution: PostConvolutionConfig,
 }
 
 impl Default for RenderingConfig {
     fn default() -> Self {
         Self {
             mode: RenderMode::Mono,
+            stereo_routing: StereoRouting::DuplicateMono,
+            post_convolution: PostConvolutionConfig::default(),
         }
+    }
+}
+
+impl RenderingConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        self.post_convolution.validate()
+    }
+
+    pub fn summary(&self) -> String {
+        format!(
+            "mode={} stereo_routing={} convolution={}",
+            self.mode.as_str(),
+            self.stereo_routing.as_str(),
+            self.post_convolution.summary(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PostConvolutionConfig {
+    pub enabled: bool,
+    pub impulse_response: Vec<f32>,
+    pub dry_mix: f32,
+    pub wet_mix: f32,
+    pub normalize_output: bool,
+}
+
+impl Default for PostConvolutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            impulse_response: Vec::new(),
+            dry_mix: 1.0,
+            wet_mix: 1.0,
+            normalize_output: true,
+        }
+    }
+}
+
+impl PostConvolutionConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if !self.dry_mix.is_finite() || !self.wet_mix.is_finite() {
+            return Err("rendering dry_mix and wet_mix must be finite".to_string());
+        }
+        if !(0.0..=1.0).contains(&self.dry_mix) || !(0.0..=1.0).contains(&self.wet_mix) {
+            return Err("rendering dry_mix and wet_mix must be within 0.0..=1.0".to_string());
+        }
+        if self.enabled && self.impulse_response.is_empty() {
+            return Err(
+                "enabled post_convolution requires a non-empty impulse_response".to_string(),
+            );
+        }
+        if self.impulse_response.iter().any(|tap| !tap.is_finite()) {
+            return Err("rendering impulse_response must contain only finite taps".to_string());
+        }
+
+        Ok(())
+    }
+
+    pub fn summary(&self) -> String {
+        if !self.enabled {
+            return "off".to_string();
+        }
+
+        format!(
+            "on(ir_len={} dry={} wet={} normalize={})",
+            self.impulse_response.len(),
+            self.dry_mix,
+            self.wet_mix,
+            self.normalize_output,
+        )
     }
 }
 
@@ -259,10 +335,24 @@ impl RenderMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StereoRouting {
+    DuplicateMono,
+}
+
+impl StereoRouting {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DuplicateMono => "duplicate-mono",
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AppConfig, EnvelopeAdaptationMode, GainAdaptationMode, MatchingConfig, OverlapScheduleMode,
+        PostConvolutionConfig,
     };
 
     #[test]
@@ -348,12 +438,46 @@ mod tests {
         config.micro_adaptation.envelope = EnvelopeAdaptationMode::InheritCarrierRms;
         config.synthesis.overlap_schedule = OverlapScheduleMode::Alternating;
         config.synthesis.irregularity_ms = 5;
+        config.rendering.post_convolution = PostConvolutionConfig {
+            enabled: true,
+            impulse_response: vec![1.0, 0.25],
+            dry_mix: 0.5,
+            wet_mix: 1.0,
+            normalize_output: false,
+        };
 
         let summary = config.summary();
 
         assert!(summary.contains("micro(gain=match-target-rms, envelope=inherit-carrier-rms)"));
         assert!(
             summary.contains("synthesis(output_hop=50ms schedule=alternating irregularity=5ms)")
+        );
+        assert!(summary.contains(
+            "rendering(mode=mono stereo_routing=duplicate-mono convolution=on(ir_len=2 dry=0.5 wet=1 normalize=false))"
+        ));
+    }
+
+    #[test]
+    fn rendering_rejects_out_of_range_post_convolution_mix() {
+        let mut config = AppConfig::default();
+        config.rendering.post_convolution.dry_mix = 1.5;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "rendering dry_mix and wet_mix must be within 0.0..=1.0"
+        );
+    }
+
+    #[test]
+    fn rendering_rejects_enabled_post_convolution_without_impulse_response() {
+        let mut config = AppConfig::default();
+        config.rendering.post_convolution.enabled = true;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "enabled post_convolution requires a non-empty impulse_response"
         );
     }
 }
