@@ -1,0 +1,10 @@
+pub mod app;
+pub mod audio;
+pub mod cli;
+pub mod config;
+pub mod corpus;
+pub mod descriptor;
+pub mod matching;
+pub mod rendering;
+pub mod synthesis;
+pub mod target;
