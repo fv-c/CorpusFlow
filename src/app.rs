@@ -215,16 +215,11 @@ where
     }
 
     fn render_line(&self, label: &str) -> String {
-        let percent = if self.total_steps == 0 {
-            100
-        } else {
-            self.completed_steps * 100 / self.total_steps
-        };
         let bar = self.render_bar();
 
         format!(
-            "CorpusFlow {:>3}% [{}] {}/{} {}",
-            percent, bar, self.completed_steps, self.total_steps, label
+            "CorpusFlow [{}] step {}/{} {}",
+            bar, self.completed_steps, self.total_steps, label
         )
     }
 
@@ -507,10 +502,10 @@ mod tests {
         assert!(output.contains("corpus_sources=1"));
         assert!(output.contains("matched_steps=8"));
         assert!(
-            progress.contains("CorpusFlow   0% [>-----------------------] 0/7 starting pipeline")
+            progress.contains("CorpusFlow [>-----------------------] step 0/7 starting pipeline")
         );
-        assert!(progress.contains("CorpusFlow 100% [========================] 7/7 output written"));
-        assert!(progress.contains("4/7 target analyzed"));
+        assert!(progress.contains("CorpusFlow [========================] step 7/7 output written"));
+        assert!(progress.contains("step 4/7 target analyzed"));
         assert_eq!(rendered.channels, 2);
         assert_eq!(rendered.frame_count(), 8);
         assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
@@ -530,16 +525,16 @@ mod tests {
 
         assert!(
             output.contains(
-                "\r\x1b[2KCorpusFlow   0% [>-----------------------] 0/2 starting pipeline"
+                "\r\x1b[2KCorpusFlow [>-----------------------] step 0/2 starting pipeline"
             )
         );
         assert!(
             output
-                .contains("\r\x1b[2KCorpusFlow  50% [============>-----------] 1/2 corpus loaded")
+                .contains("\r\x1b[2KCorpusFlow [============>-----------] step 1/2 corpus loaded")
         );
         assert!(
             output.contains(
-                "\r\x1b[2KCorpusFlow 100% [========================] 2/2 output written\n"
+                "\r\x1b[2KCorpusFlow [========================] step 2/2 output written\n"
             )
         );
     }
