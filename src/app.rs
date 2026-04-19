@@ -1,4 +1,8 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    io::{self, Write},
+    path::Path,
+};
 
 use crate::{
     cli::{CliCommand, ParsedCli, usage},
@@ -17,6 +21,17 @@ where
     I: IntoIterator<Item = S>,
     S: Into<String>,
 {
+    let stderr = io::stderr();
+    let mut progress = stderr.lock();
+    run_with_progress(args, &mut progress)
+}
+
+fn run_with_progress<I, S, W>(args: I, progress: &mut W) -> Result<String, String>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<String>,
+    W: Write,
+{
     let cli = ParsedCli::parse(args)?;
 
     let output = match cli.command {
@@ -26,7 +41,7 @@ where
             output_path,
         } => {
             let config = load_config(config_path.as_deref())?;
-            run_pipeline(&config, &output_path)?
+            run_pipeline(&config, &output_path, progress)?
         }
         CliCommand::ShowConfig => AppConfig::default().to_pretty_json()?,
         CliCommand::ValidateConfig { config_path } => validate_config_message(&config_path)?,
@@ -48,7 +63,14 @@ fn load_config(config_path: Option<&str>) -> Result<AppConfig, String> {
     Ok(config)
 }
 
-fn run_pipeline(config: &AppConfig, output_path: &str) -> Result<String, String> {
+fn run_pipeline<W>(
+    config: &AppConfig,
+    output_path: &str,
+    progress: &mut W,
+) -> Result<String, String>
+where
+    W: Write,
+{
     if output_path.trim().is_empty() {
         return Err("run output path must not be empty".to_string());
     }
@@ -59,10 +81,16 @@ fn run_pipeline(config: &AppConfig, output_path: &str) -> Result<String, String>
         return Err("run requires target.path to be set".to_string());
     }
 
+    let mut progress_bar = PipelineProgress::new(progress, 7);
+    progress_bar.emit("starting pipeline");
+
     let corpus_plan = CorpusPlan::from_config(&config.corpus);
     let corpus_sources = corpus_plan.load_sources(&config.corpus.root)?;
+    progress_bar.advance("corpus loaded");
     let corpus_segmentations = corpus_plan.segment_sources(&corpus_sources)?;
+    progress_bar.advance("corpus segmented");
     let corpus_index = CorpusIndex::build(&corpus_sources, &corpus_segmentations)?;
+    progress_bar.advance("corpus indexed");
 
     let target_plan = TargetPlan::from(&config.target);
     let target_input = TargetInput::load(&config.target)?;
@@ -71,9 +99,11 @@ fn run_pipeline(config: &AppConfig, output_path: &str) -> Result<String, String>
         &target_input,
         &corpus_index.normalization,
     )?;
+    progress_bar.advance("target analyzed");
 
     let matching_model = MatchingModel::from(&config.matching);
     let match_sequence = greedy_match(&matching_model, &corpus_index, &target_analysis)?;
+    progress_bar.advance("matching complete");
 
     let synthesis_plan = SynthesisPlan::from(&config.synthesis);
     let micro_adaptation = MicroAdaptationPlan::from(&config.micro_adaptation);
@@ -84,11 +114,13 @@ fn run_pipeline(config: &AppConfig, output_path: &str) -> Result<String, String>
         &micro_adaptation,
         &target_analysis,
     )?;
+    progress_bar.advance("synthesis complete");
 
     let render_plan = RenderPlan::from(&config.rendering);
     let rendered = render_reconstruction(&render_plan, &synthesis.audio)?;
     prepare_output_parent(output_path)?;
     write_output_wav(output_path, config.rendering.mode, &rendered)?;
+    progress_bar.advance("output written");
 
     Ok(format!(
         "render complete: output={} corpus_sources={} corpus_grains={} target_frames={} matched_steps={} rendered_channels={} rendered_frames={}",
@@ -124,6 +156,49 @@ fn validate_config_message(config_path: &str) -> Result<String, String> {
     Ok(format!("config valid: {config_path}\n{}", config.summary()))
 }
 
+struct PipelineProgress<'a, W> {
+    writer: &'a mut W,
+    total_steps: usize,
+    completed_steps: usize,
+}
+
+impl<'a, W> PipelineProgress<'a, W>
+where
+    W: Write,
+{
+    const BAR_WIDTH: usize = 28;
+
+    fn new(writer: &'a mut W, total_steps: usize) -> Self {
+        Self {
+            writer,
+            total_steps,
+            completed_steps: 0,
+        }
+    }
+
+    fn advance(&mut self, label: &str) {
+        self.completed_steps = (self.completed_steps + 1).min(self.total_steps);
+        self.emit(label);
+    }
+
+    fn emit(&mut self, label: &str) {
+        let filled = if self.total_steps == 0 {
+            0
+        } else {
+            self.completed_steps * Self::BAR_WIDTH / self.total_steps
+        };
+        let empty = Self::BAR_WIDTH.saturating_sub(filled);
+        let bar = format!("{}{}", "#".repeat(filled), ".".repeat(empty));
+
+        let _ = writeln!(
+            self.writer,
+            "[{bar}] {}/{} {}",
+            self.completed_steps, self.total_steps, label
+        );
+        let _ = self.writer.flush();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -133,7 +208,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::run;
+    use super::{run, run_with_progress};
     use crate::audio::read_wav;
     use hound::{SampleFormat, WavSpec, WavWriter};
 
@@ -344,21 +419,29 @@ mod tests {
             ),
         );
 
-        let output = run([
-            "corpusflow",
-            "run",
-            "--config",
-            config_path.to_string_lossy().as_ref(),
-            "--output",
-            output_path.to_string_lossy().as_ref(),
-        ])
+        let mut progress = Vec::new();
+        let output = run_with_progress(
+            [
+                "corpusflow",
+                "run",
+                "--config",
+                config_path.to_string_lossy().as_ref(),
+                "--output",
+                output_path.to_string_lossy().as_ref(),
+            ],
+            &mut progress,
+        )
         .expect("run should succeed");
+        let progress = String::from_utf8(progress).expect("progress output should be utf-8");
 
         let rendered = read_wav(&output_path).expect("rendered WAV should load");
 
         assert!(output.contains("render complete:"));
         assert!(output.contains("corpus_sources=1"));
         assert!(output.contains("matched_steps=8"));
+        assert!(progress.contains("[............................] 0/7 starting pipeline"));
+        assert!(progress.contains("[############################] 7/7 output written"));
+        assert!(progress.contains("4/7 target analyzed"));
         assert_eq!(rendered.channels, 2);
         assert_eq!(rendered.frame_count(), 8);
         assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));

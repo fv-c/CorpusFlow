@@ -2,7 +2,7 @@
 
 ## CLI surface
 - `cargo run -- show-config`: print the canonical default config as pretty JSON.
-- `cargo run -- run [--config PATH] --output PATH`: load JSON config, run the offline pipeline, and write the rendered WAV output.
+- `cargo run -- run [--config PATH] --output PATH`: load JSON config, run the offline pipeline, emit stage progress on `stderr`, and write the rendered WAV output.
 - `cargo run -- validate-config PATH`: load JSON config and print the validated summary without running synthesis.
 
 ## Canonical default config
