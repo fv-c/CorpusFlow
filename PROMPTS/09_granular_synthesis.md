@@ -4,3 +4,4 @@
 - Deliverables: synthesis loop, window functions, explicit synthesis output hop, output tests, benchmark.
 - Constraints: correctness first, avoid unnecessary allocation in the overlap-add path.
 - Follow-up in this phase: add an irregular-overlap scheduling path so reconstruction can avoid a rigid mechanical grain flow while preserving deterministic baseline behavior as the default mode.
+- Follow-up in this phase: keep the synthesis path compatible with carrier-envelope transfer so global prosodic shaping can be applied cleanly.

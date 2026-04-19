@@ -29,6 +29,9 @@
 - Rendering is separate from synthesis so spatial modes can evolve independently.
 - Corpus grain hop, target analysis hop, and synthesis output hop should remain separate controls.
 - Irregular overlap belongs to synthesis scheduling, not corpus segmentation or baseline matching.
+- Carrier prosodic inheritance belongs to synthesis or micro-adaptation, not to corpus indexing or matching.
+- Global envelope transfer should be available as a deterministic baseline adaptation layer.
+- Optional convolution should remain a separate post-process after reconstruction, with dry/wet control and output safety normalization.
 
 ## Active dependencies
 - `criterion` (dev): stable microbenchmark harness for descriptor extraction and later hot loops.
