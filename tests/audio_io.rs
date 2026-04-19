@@ -51,9 +51,9 @@ fn loads_corpus_wavs_recursively_in_sorted_order() {
 }
 
 #[test]
-fn rejects_stereo_corpus_input() {
+fn downmixes_stereo_corpus_input_to_mono() {
     let fixture = TempFixtureDir::new();
-    let path = fixture.write_pcm16_wav("stereo.wav", 2, &[0, 0, 10_000, -10_000]);
+    let path = fixture.write_pcm16_wav("stereo.wav", 2, &[0, 10_000, 10_000, -10_000]);
 
     let config = CorpusConfig {
         root: path.to_string_lossy().into_owned(),
@@ -62,10 +62,14 @@ fn rejects_stereo_corpus_input() {
         mono_only: true,
     };
 
-    let error = CorpusPlan::from_config(&config)
+    let corpus = CorpusPlan::from_config(&config)
         .load_sources(&config.root)
-        .expect_err("stereo corpus must fail");
-    assert!(error.contains("expected mono WAV input"));
+        .expect("stereo corpus should downmix");
+
+    assert_eq!(corpus.len(), 1);
+    assert_eq!(corpus[0].audio.frame_count(), 2);
+    assert!(approx_eq(corpus[0].audio.samples[0], 5_000.0 / 32_767.0));
+    assert!(approx_eq(corpus[0].audio.samples[1], 0.0));
 }
 
 #[test]

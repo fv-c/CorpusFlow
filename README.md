@@ -100,7 +100,7 @@ Se il path di output contiene directory non ancora esistenti, CorpusFlow le crea
 
 La CLI usa un file JSON esplicito. I campi principali sono:
 
-- `corpus`: root del corpus WAV, dimensione grain, hop, modalita' mono
+- `corpus`: root del corpus WAV, dimensione grain, hop, modalita' mono con downmix stereo prima della segmentazione
 - `target`: path del target WAV e griglia di analisi
 - `matching`: pesi del modello di costo
 - `micro_adaptation`: gain ed envelope post-selezione

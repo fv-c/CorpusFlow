@@ -149,7 +149,7 @@ where
 
     let mut sources = Vec::with_capacity(files.len());
     for path in files {
-        let audio = crate::audio::read_mono_wav(&path)?;
+        let audio = crate::audio::read_corpus_mono_wav(&path)?;
         sources.push(CorpusSourceFile { path, audio });
     }
 

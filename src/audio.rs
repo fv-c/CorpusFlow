@@ -37,6 +37,24 @@ impl AudioBuffer {
     pub fn frame_count(&self) -> usize {
         self.samples.len() / self.channels as usize
     }
+
+    pub fn into_mono_downmix(self) -> Result<MonoBuffer, String> {
+        match self.channels {
+            1 => MonoBuffer::new(self.sample_rate, self.samples),
+            2 => {
+                let mut mono_samples = Vec::with_capacity(self.frame_count());
+
+                for frame in self.samples.chunks_exact(2) {
+                    mono_samples.push((frame[0] + frame[1]) * 0.5);
+                }
+
+                MonoBuffer::new(self.sample_rate, mono_samples)
+            }
+            channels => Err(format!(
+                "corpus mono downmix supports only mono or stereo WAV input, found {channels} channels"
+            )),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +128,13 @@ where
     P: AsRef<Path>,
 {
     MonoBuffer::try_from(read_wav(path)?)
+}
+
+pub fn read_corpus_mono_wav<P>(path: P) -> Result<MonoBuffer, String>
+where
+    P: AsRef<Path>,
+{
+    read_wav(path)?.into_mono_downmix()
 }
 
 pub fn write_wav<P>(path: P, buffer: &AudioBuffer) -> Result<(), String>
@@ -196,4 +221,33 @@ fn read_int_samples(
                 .map_err(|error| format!("failed to read WAV `{}`: {error}", path.display()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AudioBuffer;
+
+    #[test]
+    fn downmixes_stereo_audio_to_mono_by_frame_average() {
+        let buffer = AudioBuffer::new(48_000, 2, vec![0.25, 0.75, -1.0, 0.5]).expect("buffer");
+
+        let mono = buffer.into_mono_downmix().expect("stereo should downmix");
+
+        assert_eq!(mono.sample_rate, 48_000);
+        assert_eq!(mono.samples, vec![0.5, -0.25]);
+    }
+
+    #[test]
+    fn rejects_multichannel_downmix_beyond_stereo() {
+        let buffer = AudioBuffer::new(48_000, 3, vec![0.0, 0.1, 0.2]).expect("buffer");
+
+        let error = buffer
+            .into_mono_downmix()
+            .expect_err("3-channel corpus audio must fail");
+
+        assert_eq!(
+            error,
+            "corpus mono downmix supports only mono or stereo WAV input, found 3 channels"
+        );
+    }
 }

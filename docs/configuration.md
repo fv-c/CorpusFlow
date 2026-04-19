@@ -54,7 +54,7 @@
 ```
 
 ## Section notes
-- `corpus`: fixed-grid grain planning for corpus ingestion. `root` is the WAV file or directory root. `mono_only=true` keeps the mono corpus baseline explicit.
+- `corpus`: fixed-grid grain planning for corpus ingestion. `root` is the WAV file or directory root. `mono_only=true` keeps the mono corpus baseline explicit by downmixing stereo corpus WAVs before segmentation.
 - `target`: target analysis input and frame grid. `path` is the target WAV path.
 - `matching`: baseline target and transition cost weights. All values must be finite.
 - `micro_adaptation`: deterministic post-selection gain and carrier-envelope modes. Allowed values are `off`, `match-target-rms`, and `inherit-carrier-rms`.
