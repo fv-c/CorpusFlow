@@ -14,7 +14,7 @@
 - `audio.rs`: WAV read/write and explicit sample buffer types
 - `cli.rs`: minimal command parsing
 - `config.rs`: serializable baseline configuration
-- `corpus.rs`: corpus preprocessing/indexing skeleton
+- `corpus.rs`: corpus ingestion and fixed-grid grain planning
 - `target.rs`: target analysis skeleton
 - `descriptor.rs`: descriptor spec skeleton
 - `matching.rs`: matching model skeleton
