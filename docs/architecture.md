@@ -28,5 +28,7 @@
 - Rendering is separate from synthesis so spatial modes can evolve independently.
 
 ## Active dependencies
+- `criterion` (dev): stable microbenchmark harness for descriptor extraction and later hot loops.
 - `hound`: narrow-scope WAV reader/writer for offline baseline audio I/O.
+- `rustfft`: stable FFT implementation for spectral descriptor extraction.
 - `serde`: derive `Serialize`/`Deserialize` for explicit config types.

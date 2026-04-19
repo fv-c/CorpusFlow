@@ -19,3 +19,9 @@ Compact per-frame vector for ~100 ms grains:
 - Replace items 3 to 5 with coarse log band energies if stronger spectral shape control is needed.
 
 Recommendation: keep the five-feature baseline first.
+
+## Baseline extraction notes
+- Time-domain features: log RMS, zero-crossing rate
+- Spectral features: centroid, flatness, rolloff from a Hann-windowed frame
+- Spectrum domain: positive-frequency bins only
+- Normalization path: per-dimension z-score with explicit fitted statistics
