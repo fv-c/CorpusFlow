@@ -14,3 +14,7 @@ serde = { version = "1.0", features = ["derive"] }
 [[bench]]
 name = "descriptor_extraction"
 harness = false
+
+[[bench]]
+name = "overlap_add_synthesis"
+harness = false

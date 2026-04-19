@@ -45,13 +45,33 @@ impl AppConfig {
         if self.synthesis.output_hop_ms == 0 {
             return Err("synthesis output_hop_ms must be > 0".to_string());
         }
+        if self.synthesis.overlap_schedule == OverlapScheduleMode::Fixed
+            && self.synthesis.irregularity_ms != 0
+        {
+            return Err(
+                "fixed synthesis overlap_schedule requires irregularity_ms = 0".to_string(),
+            );
+        }
+        if self.synthesis.overlap_schedule == OverlapScheduleMode::Alternating {
+            if self.synthesis.irregularity_ms == 0 {
+                return Err(
+                    "alternating synthesis overlap_schedule requires irregularity_ms > 0"
+                        .to_string(),
+                );
+            }
+            if self.synthesis.irregularity_ms >= self.synthesis.output_hop_ms {
+                return Err(
+                    "synthesis irregularity_ms must be smaller than output_hop_ms".to_string(),
+                );
+            }
+        }
 
         Ok(())
     }
 
     pub fn summary(&self) -> String {
         format!(
-            "corpus(grain={}ms hop={}ms) target(frame={}ms hop={}ms) matching(alpha={}, beta={}) micro(gain={}, envelope={}) synthesis(output_hop={}ms) rendering({})",
+            "corpus(grain={}ms hop={}ms) target(frame={}ms hop={}ms) matching(alpha={}, beta={}) micro(gain={}, envelope={}) synthesis(output_hop={}ms schedule={} irregularity={}ms) rendering({})",
             self.corpus.grain_size_ms,
             self.corpus.grain_hop_ms,
             self.target.frame_size_ms,
@@ -61,6 +81,8 @@ impl AppConfig {
             self.micro_adaptation.gain.as_str(),
             self.micro_adaptation.envelope.as_str(),
             self.synthesis.output_hop_ms,
+            self.synthesis.overlap_schedule.as_str(),
+            self.synthesis.irregularity_ms,
             self.rendering.mode.as_str(),
         )
     }
@@ -142,6 +164,8 @@ impl Default for MicroAdaptationConfig {
 pub struct SynthesisConfig {
     pub window: WindowKind,
     pub output_hop_ms: u32,
+    pub overlap_schedule: OverlapScheduleMode,
+    pub irregularity_ms: u32,
 }
 
 impl Default for SynthesisConfig {
@@ -149,6 +173,8 @@ impl Default for SynthesisConfig {
         Self {
             window: WindowKind::Hann,
             output_hop_ms: 50,
+            overlap_schedule: OverlapScheduleMode::Fixed,
+            irregularity_ms: 0,
         }
     }
 }
@@ -169,6 +195,21 @@ impl Default for RenderingConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WindowKind {
     Hann,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OverlapScheduleMode {
+    Fixed,
+    Alternating,
+}
+
+impl OverlapScheduleMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Fixed => "fixed",
+            Self::Alternating => "alternating",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,7 +261,9 @@ impl RenderMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, EnvelopeAdaptationMode, GainAdaptationMode, MatchingConfig};
+    use super::{
+        AppConfig, EnvelopeAdaptationMode, GainAdaptationMode, MatchingConfig, OverlapScheduleMode,
+    };
 
     #[test]
     fn default_config_is_valid() {
@@ -262,13 +305,55 @@ mod tests {
     }
 
     #[test]
+    fn fixed_synthesis_schedule_rejects_non_zero_irregularity() {
+        let mut config = AppConfig::default();
+        config.synthesis.irregularity_ms = 5;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "fixed synthesis overlap_schedule requires irregularity_ms = 0"
+        );
+    }
+
+    #[test]
+    fn alternating_synthesis_schedule_requires_positive_irregularity() {
+        let mut config = AppConfig::default();
+        config.synthesis.overlap_schedule = OverlapScheduleMode::Alternating;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "alternating synthesis overlap_schedule requires irregularity_ms > 0"
+        );
+    }
+
+    #[test]
+    fn alternating_synthesis_schedule_rejects_large_irregularity() {
+        let mut config = AppConfig::default();
+        config.synthesis.overlap_schedule = OverlapScheduleMode::Alternating;
+        config.synthesis.irregularity_ms = config.synthesis.output_hop_ms;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "synthesis irregularity_ms must be smaller than output_hop_ms"
+        );
+    }
+
+    #[test]
     fn summary_includes_micro_adaptation_modes() {
         let mut config = AppConfig::default();
         config.micro_adaptation.gain = GainAdaptationMode::MatchTargetRms;
         config.micro_adaptation.envelope = EnvelopeAdaptationMode::InheritCarrierRms;
+        config.synthesis.overlap_schedule = OverlapScheduleMode::Alternating;
+        config.synthesis.irregularity_ms = 5;
 
         let summary = config.summary();
 
         assert!(summary.contains("micro(gain=match-target-rms, envelope=inherit-carrier-rms)"));
+        assert!(
+            summary.contains("synthesis(output_hop=50ms schedule=alternating irregularity=5ms)")
+        );
     }
 }

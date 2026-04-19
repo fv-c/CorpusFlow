@@ -20,7 +20,7 @@
 - `descriptor.rs`: descriptor spec skeleton
 - `matching.rs`: greedy baseline matcher with target and transition costs
 - `micro_adaptation.rs`: optional post-selection gain and carrier-envelope hooks
-- `synthesis.rs`: synthesis skeleton
+- `synthesis.rs`: overlap-add synthesis, explicit windowing, fixed/alternating scheduling
 - `rendering.rs`: output/render skeleton
 
 ## Minimal viable architecture
