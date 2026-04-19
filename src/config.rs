@@ -215,6 +215,7 @@ impl Default for SynthesisConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RenderingConfig {
+    pub output_sample_rate: u32,
     pub mode: RenderMode,
     pub stereo_routing: StereoRouting,
     pub post_convolution: PostConvolutionConfig,
@@ -224,6 +225,7 @@ pub struct RenderingConfig {
 impl Default for RenderingConfig {
     fn default() -> Self {
         Self {
+            output_sample_rate: 48_000,
             mode: RenderMode::Mono,
             stereo_routing: StereoRouting::DuplicateMono,
             post_convolution: PostConvolutionConfig::default(),
@@ -234,13 +236,17 @@ impl Default for RenderingConfig {
 
 impl RenderingConfig {
     pub fn validate(&self) -> Result<(), String> {
+        if self.output_sample_rate == 0 {
+            return Err("rendering output_sample_rate must be > 0".to_string());
+        }
         self.post_convolution.validate()?;
         self.ambisonics.validate_for_mode(self.mode)
     }
 
     pub fn summary(&self) -> String {
         format!(
-            "mode={} stereo_routing={} ambisonics={} convolution={}",
+            "sample_rate={} mode={} stereo_routing={} ambisonics={} convolution={}",
+            self.output_sample_rate,
             self.mode.as_str(),
             self.stereo_routing.as_str(),
             self.ambisonics.summary(),
@@ -576,6 +582,7 @@ mod tests {
         assert_eq!(parsed, config);
         assert!(json.contains("\"window\": \"hann\""));
         assert!(json.contains("\"mode\": \"mono\""));
+        assert!(json.contains("\"output_sample_rate\": 48000"));
     }
 
     #[test]
@@ -611,6 +618,7 @@ mod tests {
     "irregularity_ms": 0
   },
   "rendering": {
+    "output_sample_rate": 48000,
     "mode": "mono",
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
@@ -724,7 +732,7 @@ mod tests {
             summary.contains("synthesis(output_hop=50ms schedule=alternating irregularity=5ms)")
         );
         assert!(summary.contains(
-            "rendering(mode=mono stereo_routing=duplicate-mono ambisonics=off convolution=on(ir_len=2 dry=0.5 wet=1 normalize=false))"
+            "rendering(sample_rate=48000 mode=mono stereo_routing=duplicate-mono ambisonics=off convolution=on(ir_len=2 dry=0.5 wet=1 normalize=false))"
         ));
     }
 
@@ -738,6 +746,15 @@ mod tests {
             error,
             "rendering dry_mix and wet_mix must be within 0.0..=1.0"
         );
+    }
+
+    #[test]
+    fn rendering_rejects_zero_output_sample_rate() {
+        let mut config = AppConfig::default();
+        config.rendering.output_sample_rate = 0;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(error, "rendering output_sample_rate must be > 0");
     }
 
     #[test]

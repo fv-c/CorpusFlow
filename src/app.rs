@@ -7,7 +7,7 @@ use std::{
 use crate::{
     cli::{CliCommand, ParsedCli, usage},
     config::AppConfig,
-    corpus::CorpusPlan,
+    corpus::{CorpusPlan, CorpusSourceFile},
     index::CorpusIndex,
     matching::{MatchingModel, greedy_match},
     micro_adaptation::MicroAdaptationPlan,
@@ -95,7 +95,8 @@ where
     progress_bar.emit("starting pipeline");
 
     let corpus_plan = CorpusPlan::from_config(&config.corpus);
-    let corpus_sources = corpus_plan.load_sources(&config.corpus.root)?;
+    let corpus_sources =
+        resample_corpus_sources(&corpus_plan.load_sources(&config.corpus.root)?, config)?;
     progress_bar.advance("corpus loaded");
     let corpus_segmentations = corpus_plan.segment_sources(&corpus_sources)?;
     progress_bar.advance("corpus segmented");
@@ -103,7 +104,7 @@ where
     progress_bar.advance("corpus indexed");
 
     let target_plan = TargetPlan::from(&config.target);
-    let target_input = TargetInput::load(&config.target)?;
+    let target_input = resample_target_input(&TargetInput::load(&config.target)?, config)?;
     let target_analysis = target_plan.analyze_against_corpus(
         &corpus_plan,
         &target_input,
@@ -142,6 +143,35 @@ where
         rendered.channels,
         rendered.frame_count(),
     ))
+}
+
+fn resample_corpus_sources(
+    corpus_sources: &[CorpusSourceFile],
+    config: &AppConfig,
+) -> Result<Vec<CorpusSourceFile>, String> {
+    let output_sample_rate = config.rendering.output_sample_rate;
+    let mut resampled = Vec::with_capacity(corpus_sources.len());
+
+    for source in corpus_sources {
+        resampled.push(CorpusSourceFile {
+            path: source.path.clone(),
+            audio: source.audio.resample_to(output_sample_rate)?,
+        });
+    }
+
+    Ok(resampled)
+}
+
+fn resample_target_input(
+    target_input: &TargetInput,
+    config: &AppConfig,
+) -> Result<TargetInput, String> {
+    Ok(TargetInput {
+        path: target_input.path.clone(),
+        audio: target_input
+            .audio
+            .resample_to(config.rendering.output_sample_rate)?,
+    })
 }
 
 fn prepare_output_parent(output_path: &str) -> Result<(), String> {
@@ -319,6 +349,7 @@ mod tests {
     "irregularity_ms": 0
   },
   "rendering": {
+    "output_sample_rate": 48000,
     "mode": "mono",
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
@@ -382,6 +413,7 @@ mod tests {
     "irregularity_ms": 0
   },
   "rendering": {
+    "output_sample_rate": 48000,
     "mode": "stereo",
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
@@ -461,6 +493,7 @@ mod tests {
     "irregularity_ms": 0
   }},
   "rendering": {{
+    "output_sample_rate": 1000,
     "mode": "stereo",
     "stereo_routing": "duplicate-mono",
     "post_convolution": {{
@@ -507,6 +540,7 @@ mod tests {
         assert!(progress.contains("CorpusFlow [========================] step 7/7 output written"));
         assert!(progress.contains("step 4/7 target analyzed"));
         assert_eq!(rendered.channels, 2);
+        assert_eq!(rendered.sample_rate, 1_000);
         assert_eq!(rendered.frame_count(), 8);
         assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
     }
@@ -580,6 +614,16 @@ mod tests {
         }
 
         fn write_pcm16_wav(&self, relative: &str, channels: u16, samples: &[i16]) -> PathBuf {
+            self.write_pcm16_wav_with_sample_rate(relative, 1_000, channels, samples)
+        }
+
+        fn write_pcm16_wav_with_sample_rate(
+            &self,
+            relative: &str,
+            sample_rate: u32,
+            channels: u16,
+            samples: &[i16],
+        ) -> PathBuf {
             let path = self.path.join(relative);
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).expect("fixture parent dir should be created");
@@ -587,7 +631,7 @@ mod tests {
 
             let spec = WavSpec {
                 channels,
-                sample_rate: 1_000,
+                sample_rate,
                 bits_per_sample: 16,
                 sample_format: SampleFormat::Int,
             };
@@ -602,6 +646,97 @@ mod tests {
             writer.finalize().expect("fixture wav should finalize");
             path
         }
+    }
+
+    #[test]
+    fn run_resamples_corpus_and_target_to_output_sample_rate() {
+        let fixture = TempFixtureDir::new();
+        fixture.create_dir("corpus");
+        fixture.write_pcm16_wav_with_sample_rate(
+            "corpus/slow.wav",
+            1_000,
+            1,
+            &[4_000, -4_000, 8_000, -8_000, 4_000, -4_000, 8_000, -8_000],
+        );
+        let target_path = fixture.write_pcm16_wav_with_sample_rate(
+            "target.wav",
+            2_000,
+            1,
+            &[
+                6_000, -6_000, 10_000, -10_000, 6_000, -6_000, 10_000, -10_000, 6_000, -6_000,
+                10_000, -10_000, 6_000, -6_000, 10_000, -10_000,
+            ],
+        );
+        let output_path = fixture.path().join("renders/resampled.wav");
+        let config_path = fixture.write_text_file(
+            "resampled.json",
+            &format!(
+                r#"{{
+  "corpus": {{
+    "root": "{}",
+    "grain_size_ms": 1,
+    "grain_hop_ms": 1,
+    "mono_only": true
+  }},
+  "target": {{
+    "path": "{}",
+    "frame_size_ms": 1,
+    "hop_size_ms": 1
+  }},
+  "matching": {{
+    "alpha": 1.0,
+    "beta": 0.25,
+    "transition_descriptor_weight": 1.0,
+    "transition_seek_weight": 0.5,
+    "source_switch_penalty": 0.25
+  }},
+  "micro_adaptation": {{
+    "gain": "off",
+    "envelope": "off"
+  }},
+  "synthesis": {{
+    "window": "hann",
+    "output_hop_ms": 1,
+    "overlap_schedule": "fixed",
+    "irregularity_ms": 0
+  }},
+  "rendering": {{
+    "output_sample_rate": 4000,
+    "mode": "mono",
+    "stereo_routing": "duplicate-mono",
+    "post_convolution": {{
+      "enabled": false,
+      "impulse_response": [],
+      "dry_mix": 1.0,
+      "wet_mix": 1.0,
+      "normalize_output": true
+    }},
+    "ambisonics": {{
+      "positioning_json_path": ""
+    }}
+  }}
+}}"#,
+                fixture.path().join("corpus").display(),
+                target_path.display()
+            ),
+        );
+
+        run([
+            "corpusflow",
+            "run",
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "--output",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .expect("run should succeed with mixed input sample rates");
+
+        let rendered = read_wav(&output_path).expect("rendered WAV should load");
+
+        assert_eq!(rendered.sample_rate, 4_000);
+        assert_eq!(rendered.channels, 1);
+        assert_eq!(rendered.frame_count(), 32);
+        assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
     }
 
     impl Drop for TempFixtureDir {

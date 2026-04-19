@@ -1,7 +1,7 @@
 # Architecture Overview
 
 ## Baseline stages
-1. Corpus audio I/O and normalization
+1. Corpus audio I/O, normalization, and resampling to the configured output sample rate
 2. Corpus segmentation and descriptor extraction
 3. Corpus indexing/storage
 4. Target analysis

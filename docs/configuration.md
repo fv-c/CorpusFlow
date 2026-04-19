@@ -37,6 +37,7 @@
     "irregularity_ms": 0
   },
   "rendering": {
+    "output_sample_rate": 48000,
     "mode": "mono",
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
@@ -59,7 +60,7 @@
 - `matching`: baseline target and transition cost weights. All values must be finite.
 - `micro_adaptation`: deterministic post-selection gain and carrier-envelope modes. Allowed values are `off`, `match-target-rms`, and `inherit-carrier-rms`.
 - `synthesis`: overlap-add windowing and scheduling. Current `window` baseline is `hann`.
-- `rendering`: output routing plus optional post-convolution. Ambisonics stays reserved behind explicit JSON positioning input.
+- `rendering`: output sample rate, output routing, and optional post-convolution. Corpus and target inputs are resampled to `output_sample_rate` before segmentation, analysis, and synthesis. Ambisonics stays reserved behind explicit JSON positioning input.
 
 ## Validation rules
 - Unknown JSON fields are rejected at every config level.
@@ -69,6 +70,7 @@
 - `target.hop_size_ms > 0`
 - matching weights must all be finite
 - `synthesis.output_hop_ms > 0`
+- `rendering.output_sample_rate > 0`
 - `overlap_schedule = "fixed"` requires `irregularity_ms = 0`
 - `overlap_schedule = "alternating"` requires `irregularity_ms > 0` and `< output_hop_ms`
 - `post_convolution.dry_mix` and `wet_mix` must stay within `0.0..=1.0`

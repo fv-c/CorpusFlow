@@ -38,6 +38,25 @@ impl AudioBuffer {
         self.samples.len() / self.channels as usize
     }
 
+    pub fn resample_to(&self, output_sample_rate: u32) -> Result<Self, String> {
+        if output_sample_rate == self.sample_rate {
+            return Ok(self.clone());
+        }
+
+        if output_sample_rate == 0 {
+            return Err("audio resample output_sample_rate must be > 0".to_string());
+        }
+
+        let output_samples = resample_interleaved(
+            &self.samples,
+            self.channels as usize,
+            self.sample_rate,
+            output_sample_rate,
+        );
+
+        Self::new(output_sample_rate, self.channels, output_samples)
+    }
+
     pub fn into_mono_downmix(self) -> Result<MonoBuffer, String> {
         match self.channels {
             1 => MonoBuffer::new(self.sample_rate, self.samples),
@@ -77,6 +96,20 @@ impl MonoBuffer {
 
     pub fn frame_count(&self) -> usize {
         self.samples.len()
+    }
+
+    pub fn resample_to(&self, output_sample_rate: u32) -> Result<Self, String> {
+        if output_sample_rate == self.sample_rate {
+            return Ok(self.clone());
+        }
+
+        if output_sample_rate == 0 {
+            return Err("mono resample output_sample_rate must be > 0".to_string());
+        }
+
+        let output_samples =
+            resample_interleaved(&self.samples, 1, self.sample_rate, output_sample_rate);
+        Self::new(output_sample_rate, output_samples)
     }
 }
 
@@ -223,9 +256,59 @@ fn read_int_samples(
         .collect()
 }
 
+fn resample_interleaved(
+    input_samples: &[f32],
+    channels: usize,
+    input_sample_rate: u32,
+    output_sample_rate: u32,
+) -> Vec<f32> {
+    if input_samples.is_empty() {
+        return Vec::new();
+    }
+
+    let input_frames = input_samples.len() / channels;
+    if input_frames == 0 {
+        return Vec::new();
+    }
+
+    let output_frames = ((input_frames as u64 * output_sample_rate as u64)
+        + (input_sample_rate as u64 / 2))
+        / input_sample_rate as u64;
+    let output_frames = output_frames.max(1) as usize;
+    let mut output_samples = vec![0.0; output_frames * channels];
+
+    for output_frame in 0..output_frames {
+        let source_numerator = output_frame as u64 * input_sample_rate as u64;
+        let source_index = (source_numerator / output_sample_rate as u64) as usize;
+
+        if source_index >= input_frames.saturating_sub(1) {
+            let input_offset = (input_frames - 1) * channels;
+            let output_offset = output_frame * channels;
+            output_samples[output_offset..output_offset + channels]
+                .copy_from_slice(&input_samples[input_offset..input_offset + channels]);
+            continue;
+        }
+
+        let next_index = source_index + 1;
+        let fractional =
+            (source_numerator % output_sample_rate as u64) as f32 / output_sample_rate as f32;
+        let current_offset = source_index * channels;
+        let next_offset = next_index * channels;
+        let output_offset = output_frame * channels;
+
+        for channel in 0..channels {
+            let current = input_samples[current_offset + channel];
+            let next = input_samples[next_offset + channel];
+            output_samples[output_offset + channel] = current + (next - current) * fractional;
+        }
+    }
+
+    output_samples
+}
+
 #[cfg(test)]
 mod tests {
-    use super::AudioBuffer;
+    use super::{AudioBuffer, MonoBuffer};
 
     #[test]
     fn downmixes_stereo_audio_to_mono_by_frame_average() {
@@ -249,5 +332,38 @@ mod tests {
             error,
             "corpus mono downmix supports only mono or stereo WAV input, found 3 channels"
         );
+    }
+
+    #[test]
+    fn resamples_mono_buffer_with_linear_interpolation() {
+        let buffer = MonoBuffer::new(2, vec![0.0, 1.0]).expect("buffer");
+
+        let resampled = buffer.resample_to(4).expect("resampled mono");
+
+        assert_eq!(resampled.sample_rate, 4);
+        assert_eq!(resampled.samples.len(), 4);
+        assert!((resampled.samples[0] - 0.0).abs() < 1.0e-6);
+        assert!((resampled.samples[1] - 0.5).abs() < 1.0e-6);
+        assert!((resampled.samples[2] - 1.0).abs() < 1.0e-6);
+        assert!((resampled.samples[3] - 1.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn resamples_multichannel_audio_per_channel() {
+        let buffer = AudioBuffer::new(2, 2, vec![0.0, 10.0, 1.0, 20.0]).expect("stereo buffer");
+
+        let resampled = buffer.resample_to(4).expect("resampled stereo");
+
+        assert_eq!(resampled.sample_rate, 4);
+        assert_eq!(resampled.channels, 2);
+        assert_eq!(resampled.samples.len(), 8);
+        assert!((resampled.samples[0] - 0.0).abs() < 1.0e-6);
+        assert!((resampled.samples[1] - 10.0).abs() < 1.0e-6);
+        assert!((resampled.samples[2] - 0.5).abs() < 1.0e-6);
+        assert!((resampled.samples[3] - 15.0).abs() < 1.0e-6);
+        assert!((resampled.samples[4] - 1.0).abs() < 1.0e-6);
+        assert!((resampled.samples[5] - 20.0).abs() < 1.0e-6);
+        assert!((resampled.samples[6] - 1.0).abs() < 1.0e-6);
+        assert!((resampled.samples[7] - 20.0).abs() < 1.0e-6);
     }
 }
