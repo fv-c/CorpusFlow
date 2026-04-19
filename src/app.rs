@@ -5,8 +5,9 @@ use std::{
 };
 
 use crate::{
+    audio::{AudioBuffer, MonoBuffer},
     cli::{CliCommand, ParsedCli, usage},
-    config::AppConfig,
+    config::{AppConfig, PostConvolutionConfig, PostConvolutionSource},
     corpus::{CorpusPlan, CorpusSourceFile},
     index::CorpusIndex,
     matching::{MatchingModel, greedy_match},
@@ -104,7 +105,8 @@ where
     progress_bar.advance("corpus indexed");
 
     let target_plan = TargetPlan::from(&config.target);
-    let target_input = resample_target_input(&TargetInput::load(&config.target)?, config)?;
+    let original_target_input = TargetInput::load(&config.target)?;
+    let target_input = resample_target_input(&original_target_input, config)?;
     let target_analysis = target_plan.analyze_against_corpus(
         &corpus_plan,
         &target_input,
@@ -127,7 +129,7 @@ where
     )?;
     progress_bar.advance("synthesis complete");
 
-    let render_plan = RenderPlan::from(&config.rendering);
+    let render_plan = build_render_plan(config, &original_target_input)?;
     let rendered = render_reconstruction(&render_plan, &synthesis.audio)?;
     prepare_output_parent(output_path)?;
     write_output_wav(output_path, config.rendering.mode, &rendered)?;
@@ -172,6 +174,49 @@ fn resample_target_input(
             .audio
             .resample_to(config.rendering.output_sample_rate)?,
     })
+}
+
+fn build_render_plan(config: &AppConfig, target_input: &TargetInput) -> Result<RenderPlan, String> {
+    let mut render_plan = RenderPlan::from(&config.rendering);
+    render_plan.post_convolution.impulse_response = resolve_post_convolution_audio(
+        &config.rendering.post_convolution,
+        target_input,
+        config.rendering.output_sample_rate,
+    )?;
+    Ok(render_plan)
+}
+
+fn resolve_post_convolution_audio(
+    config: &PostConvolutionConfig,
+    target_input: &TargetInput,
+    output_sample_rate: u32,
+) -> Result<Vec<f32>, String> {
+    if !config.enabled {
+        return Ok(Vec::new());
+    }
+
+    let source_audio = match config.source {
+        PostConvolutionSource::Target => target_input.audio.clone(),
+        PostConvolutionSource::AudioFile => crate::audio::read_wav(config.audio_path.trim())?,
+    };
+
+    let mono_audio = mixdown_audio_to_mono(&source_audio)?;
+    Ok(mono_audio.resample_to(output_sample_rate)?.samples)
+}
+
+fn mixdown_audio_to_mono(buffer: &AudioBuffer) -> Result<MonoBuffer, String> {
+    if buffer.channels == 1 {
+        return MonoBuffer::new(buffer.sample_rate, buffer.samples.clone());
+    }
+
+    let channels = buffer.channels as usize;
+    let mut mono_samples = Vec::with_capacity(buffer.frame_count());
+
+    for frame in buffer.samples.chunks_exact(channels) {
+        mono_samples.push(frame.iter().copied().sum::<f32>() / channels as f32);
+    }
+
+    MonoBuffer::new(buffer.sample_rate, mono_samples)
 }
 
 fn prepare_output_parent(output_path: &str) -> Result<(), String> {
@@ -312,6 +357,7 @@ mod tests {
         assert!(output.contains("\"grain_size_ms\": 100"));
         assert!(output.contains("\"window\": \"hann\""));
         assert!(output.contains("\"mode\": \"mono\""));
+        assert!(output.contains("\"source\": \"target\""));
     }
 
     #[test]
@@ -354,7 +400,8 @@ mod tests {
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
       "enabled": false,
-      "impulse_response": [],
+      "source": "target",
+      "audio_path": "",
       "dry_mix": 1.0,
       "wet_mix": 1.0,
       "normalize_output": true
@@ -418,7 +465,8 @@ mod tests {
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
       "enabled": false,
-      "impulse_response": [],
+      "source": "target",
+      "audio_path": "",
       "dry_mix": 1.0,
       "wet_mix": 1.0,
       "normalize_output": true
@@ -498,7 +546,8 @@ mod tests {
     "stereo_routing": "duplicate-mono",
     "post_convolution": {{
       "enabled": false,
-      "impulse_response": [],
+      "source": "target",
+      "audio_path": "",
       "dry_mix": 1.0,
       "wet_mix": 1.0,
       "normalize_output": true
@@ -542,6 +591,186 @@ mod tests {
         assert_eq!(rendered.channels, 2);
         assert_eq!(rendered.sample_rate, 1_000);
         assert_eq!(rendered.frame_count(), 8);
+        assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
+    }
+
+    #[test]
+    fn run_applies_post_convolution_from_original_target_audio() {
+        let fixture = TempFixtureDir::new();
+        fixture.create_dir("corpus");
+        fixture.write_pcm16_wav(
+            "corpus/source.wav",
+            1,
+            &[4_000, -4_000, 8_000, -8_000, 4_000, -4_000, 8_000, -8_000],
+        );
+        let target_path = fixture.write_pcm16_wav(
+            "target.wav",
+            1,
+            &[
+                6_000, -6_000, 10_000, -10_000, 6_000, -6_000, 10_000, -10_000,
+            ],
+        );
+        let output_path = fixture.path().join("renders/convolved-target.wav");
+        let config_path = fixture.write_text_file(
+            "convolved-target.json",
+            &format!(
+                r#"{{
+  "corpus": {{
+    "root": "{}",
+    "grain_size_ms": 1,
+    "grain_hop_ms": 1,
+    "mono_only": true
+  }},
+  "target": {{
+    "path": "{}",
+    "frame_size_ms": 1,
+    "hop_size_ms": 1
+  }},
+  "matching": {{
+    "alpha": 1.0,
+    "beta": 0.25,
+    "transition_descriptor_weight": 1.0,
+    "transition_seek_weight": 0.5,
+    "source_switch_penalty": 0.25
+  }},
+  "micro_adaptation": {{
+    "gain": "off",
+    "envelope": "off"
+  }},
+  "synthesis": {{
+    "window": "hann",
+    "output_hop_ms": 1,
+    "overlap_schedule": "fixed",
+    "irregularity_ms": 0
+  }},
+  "rendering": {{
+    "output_sample_rate": 1000,
+    "mode": "mono",
+    "stereo_routing": "duplicate-mono",
+    "post_convolution": {{
+      "enabled": true,
+      "source": "target",
+      "audio_path": "",
+      "dry_mix": 0.0,
+      "wet_mix": 1.0,
+      "normalize_output": false
+    }},
+    "ambisonics": {{
+      "positioning_json_path": ""
+    }}
+  }}
+}}"#,
+                fixture.path().join("corpus").display(),
+                target_path.display()
+            ),
+        );
+
+        let output = run([
+            "corpusflow",
+            "run",
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "--output",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .expect("run should succeed with target post convolution");
+        let rendered = read_wav(&output_path).expect("rendered WAV should load");
+
+        assert!(output.contains("rendered_frames=15"));
+        assert_eq!(rendered.channels, 1);
+        assert_eq!(rendered.sample_rate, 1_000);
+        assert_eq!(rendered.frame_count(), 15);
+        assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
+    }
+
+    #[test]
+    fn run_applies_post_convolution_from_external_audio_file() {
+        let fixture = TempFixtureDir::new();
+        fixture.create_dir("corpus");
+        fixture.write_pcm16_wav(
+            "corpus/source.wav",
+            1,
+            &[4_000, -4_000, 8_000, -8_000, 4_000, -4_000, 8_000, -8_000],
+        );
+        let target_path = fixture.write_pcm16_wav(
+            "target.wav",
+            1,
+            &[
+                6_000, -6_000, 10_000, -10_000, 6_000, -6_000, 10_000, -10_000,
+            ],
+        );
+        let ir_audio_path = fixture.write_pcm16_wav("ir.wav", 1, &[12_000, 12_000]);
+        let output_path = fixture.path().join("renders/convolved-file.wav");
+        let config_path = fixture.write_text_file(
+            "convolved-file.json",
+            &format!(
+                r#"{{
+  "corpus": {{
+    "root": "{}",
+    "grain_size_ms": 1,
+    "grain_hop_ms": 1,
+    "mono_only": true
+  }},
+  "target": {{
+    "path": "{}",
+    "frame_size_ms": 1,
+    "hop_size_ms": 1
+  }},
+  "matching": {{
+    "alpha": 1.0,
+    "beta": 0.25,
+    "transition_descriptor_weight": 1.0,
+    "transition_seek_weight": 0.5,
+    "source_switch_penalty": 0.25
+  }},
+  "micro_adaptation": {{
+    "gain": "off",
+    "envelope": "off"
+  }},
+  "synthesis": {{
+    "window": "hann",
+    "output_hop_ms": 1,
+    "overlap_schedule": "fixed",
+    "irregularity_ms": 0
+  }},
+  "rendering": {{
+    "output_sample_rate": 1000,
+    "mode": "mono",
+    "stereo_routing": "duplicate-mono",
+    "post_convolution": {{
+      "enabled": true,
+      "source": "audio-file",
+      "audio_path": "{}",
+      "dry_mix": 0.0,
+      "wet_mix": 1.0,
+      "normalize_output": false
+    }},
+    "ambisonics": {{
+      "positioning_json_path": ""
+    }}
+  }}
+}}"#,
+                fixture.path().join("corpus").display(),
+                target_path.display(),
+                ir_audio_path.display()
+            ),
+        );
+
+        let output = run([
+            "corpusflow",
+            "run",
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "--output",
+            output_path.to_string_lossy().as_ref(),
+        ])
+        .expect("run should succeed with external post convolution audio");
+        let rendered = read_wav(&output_path).expect("rendered WAV should load");
+
+        assert!(output.contains("rendered_frames=9"));
+        assert_eq!(rendered.channels, 1);
+        assert_eq!(rendered.sample_rate, 1_000);
+        assert_eq!(rendered.frame_count(), 9);
         assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
     }
 
@@ -706,7 +935,8 @@ mod tests {
     "stereo_routing": "duplicate-mono",
     "post_convolution": {{
       "enabled": false,
-      "impulse_response": [],
+      "source": "target",
+      "audio_path": "",
       "dry_mix": 1.0,
       "wet_mix": 1.0,
       "normalize_output": true

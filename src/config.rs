@@ -299,7 +299,8 @@ impl AmbisonicsConfig {
 #[serde(deny_unknown_fields)]
 pub struct PostConvolutionConfig {
     pub enabled: bool,
-    pub impulse_response: Vec<f32>,
+    pub source: PostConvolutionSource,
+    pub audio_path: String,
     pub dry_mix: f32,
     pub wet_mix: f32,
     pub normalize_output: bool,
@@ -309,7 +310,8 @@ impl Default for PostConvolutionConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            impulse_response: Vec::new(),
+            source: PostConvolutionSource::Target,
+            audio_path: String::new(),
             dry_mix: 1.0,
             wet_mix: 1.0,
             normalize_output: true,
@@ -325,13 +327,14 @@ impl PostConvolutionConfig {
         if !(0.0..=1.0).contains(&self.dry_mix) || !(0.0..=1.0).contains(&self.wet_mix) {
             return Err("rendering dry_mix and wet_mix must be within 0.0..=1.0".to_string());
         }
-        if self.enabled && self.impulse_response.is_empty() {
+        if self.enabled
+            && self.source == PostConvolutionSource::AudioFile
+            && self.audio_path.trim().is_empty()
+        {
             return Err(
-                "enabled post_convolution requires a non-empty impulse_response".to_string(),
+                "enabled post_convolution with source=audio-file requires a non-empty audio_path"
+                    .to_string(),
             );
-        }
-        if self.impulse_response.iter().any(|tap| !tap.is_finite()) {
-            return Err("rendering impulse_response must contain only finite taps".to_string());
         }
 
         Ok(())
@@ -342,13 +345,32 @@ impl PostConvolutionConfig {
             return "off".to_string();
         }
 
-        format!(
-            "on(ir_len={} dry={} wet={} normalize={})",
-            self.impulse_response.len(),
-            self.dry_mix,
-            self.wet_mix,
-            self.normalize_output,
-        )
+        match self.source {
+            PostConvolutionSource::Target => format!(
+                "on(source=target dry={} wet={} normalize={})",
+                self.dry_mix, self.wet_mix, self.normalize_output,
+            ),
+            PostConvolutionSource::AudioFile => format!(
+                "on(source=audio-file path={} dry={} wet={} normalize={})",
+                self.audio_path, self.dry_mix, self.wet_mix, self.normalize_output,
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PostConvolutionSource {
+    Target,
+    AudioFile,
+}
+
+impl PostConvolutionSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Target => "target",
+            Self::AudioFile => "audio-file",
+        }
     }
 }
 
@@ -562,7 +584,7 @@ mod tests {
 
     use super::{
         AppConfig, EnvelopeAdaptationMode, GainAdaptationMode, MatchingConfig, OverlapScheduleMode,
-        PostConvolutionConfig, RenderMode,
+        PostConvolutionConfig, PostConvolutionSource, RenderMode,
     };
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -583,6 +605,7 @@ mod tests {
         assert!(json.contains("\"window\": \"hann\""));
         assert!(json.contains("\"mode\": \"mono\""));
         assert!(json.contains("\"output_sample_rate\": 48000"));
+        assert!(json.contains("\"source\": \"target\""));
     }
 
     #[test]
@@ -623,7 +646,8 @@ mod tests {
     "stereo_routing": "duplicate-mono",
     "post_convolution": {
       "enabled": false,
-      "impulse_response": [],
+      "source": "target",
+      "audio_path": "",
       "dry_mix": 1.0,
       "wet_mix": 1.0,
       "normalize_output": true
@@ -719,7 +743,8 @@ mod tests {
         config.synthesis.irregularity_ms = 5;
         config.rendering.post_convolution = PostConvolutionConfig {
             enabled: true,
-            impulse_response: vec![1.0, 0.25],
+            source: PostConvolutionSource::AudioFile,
+            audio_path: "fixtures/ir.wav".to_string(),
             dry_mix: 0.5,
             wet_mix: 1.0,
             normalize_output: false,
@@ -732,7 +757,7 @@ mod tests {
             summary.contains("synthesis(output_hop=50ms schedule=alternating irregularity=5ms)")
         );
         assert!(summary.contains(
-            "rendering(sample_rate=48000 mode=mono stereo_routing=duplicate-mono ambisonics=off convolution=on(ir_len=2 dry=0.5 wet=1 normalize=false))"
+            "rendering(sample_rate=48000 mode=mono stereo_routing=duplicate-mono ambisonics=off convolution=on(source=audio-file path=fixtures/ir.wav dry=0.5 wet=1 normalize=false))"
         ));
     }
 
@@ -758,15 +783,25 @@ mod tests {
     }
 
     #[test]
-    fn rendering_rejects_enabled_post_convolution_without_impulse_response() {
+    fn rendering_rejects_enabled_audio_file_post_convolution_without_audio_path() {
         let mut config = AppConfig::default();
         config.rendering.post_convolution.enabled = true;
+        config.rendering.post_convolution.source = PostConvolutionSource::AudioFile;
 
         let error = config.validate().expect_err("config should be invalid");
         assert_eq!(
             error,
-            "enabled post_convolution requires a non-empty impulse_response"
+            "enabled post_convolution with source=audio-file requires a non-empty audio_path"
         );
+    }
+
+    #[test]
+    fn rendering_accepts_enabled_target_post_convolution_without_audio_path() {
+        let mut config = AppConfig::default();
+        config.rendering.post_convolution.enabled = true;
+        config.rendering.post_convolution.source = PostConvolutionSource::Target;
+
+        assert_eq!(config.validate(), Ok(()));
     }
 
     #[test]

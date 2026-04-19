@@ -56,7 +56,7 @@ impl From<&PostConvolutionConfig> for PostConvolutionPlan {
     fn from(config: &PostConvolutionConfig) -> Self {
         Self {
             enabled: config.enabled,
-            impulse_response: config.impulse_response.clone(),
+            impulse_response: Vec::new(),
             dry_mix: config.dry_mix,
             wet_mix: config.wet_mix,
             normalize_output: config.normalize_output,

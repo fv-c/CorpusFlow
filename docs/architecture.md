@@ -32,7 +32,7 @@
 - Irregular overlap belongs to synthesis scheduling, not corpus segmentation or baseline matching.
 - Carrier prosodic inheritance belongs to synthesis or micro-adaptation, not to corpus indexing or matching.
 - Global envelope transfer should be available as a deterministic baseline adaptation layer.
-- Optional convolution should remain a separate post-process after reconstruction, with dry/wet control and output safety normalization.
+- Optional convolution should remain a separate post-process after reconstruction, with dry/wet control, output safety normalization, and an explicit audio source from either the original target file or a separate WAV file.
 - Future ambisonics rendering should be enabled only through an explicit external JSON positioning spec with trajectory and jitter controls.
 
 ## Active dependencies
