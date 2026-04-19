@@ -47,6 +47,95 @@ impl From<&SynthesisConfig> for SynthesisPlan {
     }
 }
 
+impl SynthesisPlan {
+    pub fn schedule(
+        &self,
+        sample_rate: u32,
+        corpus_index: &CorpusIndex,
+        sequence: &MatchSequence,
+    ) -> Result<Vec<ScheduledGrain>, String> {
+        let spec = SynthesisFrameSpec::from_plan(self, sample_rate)?;
+        let mut scheduled = Vec::with_capacity(sequence.steps.len());
+        let mut output_start_frame = 0;
+
+        for (step_index, step) in sequence.steps.iter().enumerate() {
+            let grain = corpus_index
+                .grain(step.selected_grain_index)
+                .ok_or_else(|| {
+                    format!(
+                        "match step {step_index} references invalid grain index {}",
+                        step.selected_grain_index
+                    )
+                })?;
+
+            scheduled.push(ScheduledGrain {
+                match_step_index: step_index,
+                source_index: grain.source_index,
+                source_start_frame: grain.start_frame,
+                len_frames: grain.len_frames,
+                output_start_frame,
+            });
+
+            output_start_frame += scheduled_hop_frames(self.overlap_schedule, spec, step_index);
+        }
+
+        Ok(scheduled)
+    }
+
+    pub fn synthesize(
+        &self,
+        corpus_sources: &[CorpusSourceFile],
+        corpus_index: &CorpusIndex,
+        sequence: &MatchSequence,
+    ) -> Result<SynthesisOutput, String> {
+        let sample_rate = resolve_synthesis_sample_rate(corpus_sources, corpus_index, sequence)?;
+        let scheduled_grains = self.schedule(sample_rate, corpus_index, sequence)?;
+        let output_frames = scheduled_grains
+            .iter()
+            .map(|grain| grain.output_start_frame + grain.len_frames)
+            .max()
+            .unwrap_or(0);
+        let mut output_samples = vec![0.0; output_frames];
+        let mut window_cache_len = 0;
+        let mut window_cache = Vec::new();
+
+        for grain in &scheduled_grains {
+            let source = corpus_sources.get(grain.source_index).ok_or_else(|| {
+                format!(
+                    "scheduled grain {} references invalid source index {}",
+                    grain.match_step_index, grain.source_index
+                )
+            })?;
+            let source_end = grain.source_start_frame + grain.len_frames;
+            if source_end > source.audio.samples.len() {
+                return Err(format!(
+                    "scheduled grain {} exceeds source {} length: end {} > {}",
+                    grain.match_step_index,
+                    grain.source_index,
+                    source_end,
+                    source.audio.samples.len()
+                ));
+            }
+
+            if window_cache_len != grain.len_frames {
+                window_cache = build_window(self.window, grain.len_frames);
+                window_cache_len = grain.len_frames;
+            }
+
+            let input = &source.audio.samples[grain.source_start_frame..source_end];
+            for frame_index in 0..grain.len_frames {
+                output_samples[grain.output_start_frame + frame_index] +=
+                    input[frame_index] * window_cache[frame_index];
+            }
+        }
+
+        Ok(SynthesisOutput {
+            audio: MonoBuffer::new(sample_rate, output_samples)?,
+            scheduled_grains,
+        })
+    }
+}
+
 impl SynthesisFrameSpec {
     pub fn from_plan(plan: &SynthesisPlan, sample_rate: u32) -> Result<Self, String> {
         if sample_rate == 0 {
@@ -80,93 +169,6 @@ impl SynthesisFrameSpec {
             irregularity_frames,
         })
     }
-}
-
-pub fn schedule_match_sequence(
-    plan: &SynthesisPlan,
-    sample_rate: u32,
-    corpus_index: &CorpusIndex,
-    sequence: &MatchSequence,
-) -> Result<Vec<ScheduledGrain>, String> {
-    let spec = SynthesisFrameSpec::from_plan(plan, sample_rate)?;
-    let mut scheduled = Vec::with_capacity(sequence.steps.len());
-    let mut output_start_frame = 0;
-
-    for (step_index, step) in sequence.steps.iter().enumerate() {
-        let grain = corpus_index
-            .grain(step.selected_grain_index)
-            .ok_or_else(|| {
-                format!(
-                    "match step {step_index} references invalid grain index {}",
-                    step.selected_grain_index
-                )
-            })?;
-
-        scheduled.push(ScheduledGrain {
-            match_step_index: step_index,
-            source_index: grain.source_index,
-            source_start_frame: grain.start_frame,
-            len_frames: grain.len_frames,
-            output_start_frame,
-        });
-
-        output_start_frame += scheduled_hop_frames(plan.overlap_schedule, spec, step_index);
-    }
-
-    Ok(scheduled)
-}
-
-pub fn synthesize_match_sequence(
-    plan: &SynthesisPlan,
-    corpus_sources: &[CorpusSourceFile],
-    corpus_index: &CorpusIndex,
-    sequence: &MatchSequence,
-) -> Result<SynthesisOutput, String> {
-    let sample_rate = resolve_synthesis_sample_rate(corpus_sources, corpus_index, sequence)?;
-    let scheduled_grains = schedule_match_sequence(plan, sample_rate, corpus_index, sequence)?;
-    let output_frames = scheduled_grains
-        .iter()
-        .map(|grain| grain.output_start_frame + grain.len_frames)
-        .max()
-        .unwrap_or(0);
-    let mut output_samples = vec![0.0; output_frames];
-    let mut window_cache_len = 0;
-    let mut window_cache = Vec::new();
-
-    for grain in &scheduled_grains {
-        let source = corpus_sources.get(grain.source_index).ok_or_else(|| {
-            format!(
-                "scheduled grain {} references invalid source index {}",
-                grain.match_step_index, grain.source_index
-            )
-        })?;
-        let source_end = grain.source_start_frame + grain.len_frames;
-        if source_end > source.audio.samples.len() {
-            return Err(format!(
-                "scheduled grain {} exceeds source {} length: end {} > {}",
-                grain.match_step_index,
-                grain.source_index,
-                source_end,
-                source.audio.samples.len()
-            ));
-        }
-
-        if window_cache_len != grain.len_frames {
-            window_cache = build_window(plan.window, grain.len_frames);
-            window_cache_len = grain.len_frames;
-        }
-
-        let input = &source.audio.samples[grain.source_start_frame..source_end];
-        for frame_index in 0..grain.len_frames {
-            output_samples[grain.output_start_frame + frame_index] +=
-                input[frame_index] * window_cache[frame_index];
-        }
-    }
-
-    Ok(SynthesisOutput {
-        audio: MonoBuffer::new(sample_rate, output_samples)?,
-        scheduled_grains,
-    })
 }
 
 pub fn build_window(kind: WindowKind, frame_size: usize) -> Vec<f32> {
@@ -295,10 +297,7 @@ fn ms_to_optional_frames(sample_rate: u32, milliseconds: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ScheduledGrain, SynthesisFrameSpec, SynthesisPlan, build_window, schedule_match_sequence,
-        synthesize_match_sequence,
-    };
+    use super::{ScheduledGrain, SynthesisFrameSpec, SynthesisPlan, build_window};
     use crate::{
         audio::MonoBuffer,
         config::{OverlapScheduleMode, WindowKind},
@@ -346,8 +345,9 @@ mod tests {
         let sequence = test_match_sequence(vec![0, 1, 0]);
         let corpus_index = test_corpus_index();
 
-        let scheduled =
-            schedule_match_sequence(&plan, 1_000, &corpus_index, &sequence).expect("schedule");
+        let scheduled = plan
+            .schedule(1_000, &corpus_index, &sequence)
+            .expect("schedule");
 
         assert_eq!(
             scheduled,
@@ -388,8 +388,9 @@ mod tests {
         let sequence = test_match_sequence(vec![0, 1, 0, 1]);
         let corpus_index = test_corpus_index();
 
-        let scheduled =
-            schedule_match_sequence(&plan, 1_000, &corpus_index, &sequence).expect("schedule");
+        let scheduled = plan
+            .schedule(1_000, &corpus_index, &sequence)
+            .expect("schedule");
 
         let output_starts: Vec<_> = scheduled
             .iter()
@@ -414,7 +415,8 @@ mod tests {
         let corpus_index = test_corpus_index();
         let sequence = test_match_sequence(vec![0, 1]);
 
-        let output = synthesize_match_sequence(&plan, &corpus_sources, &corpus_index, &sequence)
+        let output = plan
+            .synthesize(&corpus_sources, &corpus_index, &sequence)
             .expect("synthesis");
 
         assert_eq!(output.scheduled_grains.len(), 2);
@@ -485,7 +487,8 @@ mod tests {
         };
         let sequence = test_match_sequence(vec![0, 1]);
 
-        let error = synthesize_match_sequence(&plan, &corpus_sources, &corpus_index, &sequence)
+        let error = plan
+            .synthesize(&corpus_sources, &corpus_index, &sequence)
             .expect_err("mixed sample rates should fail");
 
         assert_eq!(

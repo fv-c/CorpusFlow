@@ -13,6 +13,64 @@ pub struct TargetPlan {
     pub hop_size_ms: u32,
 }
 
+impl TargetPlan {
+    pub fn validate_alignment(&self, corpus_plan: &CorpusPlan) -> Result<(), String> {
+        if self.frame_size_ms != corpus_plan.grain_size_ms {
+            return Err(format!(
+                "target frame_size_ms must match corpus grain_size_ms, found {} and {}",
+                self.frame_size_ms, corpus_plan.grain_size_ms
+            ));
+        }
+
+        Ok(())
+    }
+
+    pub fn analyze(&self, input: &TargetInput) -> Result<TargetAnalysis, String> {
+        let mono_samples = mixdown_to_mono(&input.audio);
+        let spec = TargetFrameSpec::from_plan(self, input.audio.sample_rate)?;
+        let grid = TargetFrameGrid::build(mono_samples.len(), spec);
+        let mut extractor =
+            BaselineDescriptorExtractor::new(spec.sample_rate, spec.frame_size_frames)?;
+        let mut frames = Vec::with_capacity(grid.frames.len());
+
+        for frame in &grid.frames {
+            let start = frame.start_frame;
+            let end = start + frame.len_frames;
+            let raw_descriptor = extractor.extract_frame(&mono_samples[start..end])?;
+
+            frames.push(TargetAnalysisFrame {
+                start_frame: frame.start_frame,
+                len_frames: frame.len_frames,
+                rms: root_mean_square(&mono_samples[start..end]),
+                raw_descriptor,
+                normalized_descriptor: raw_descriptor,
+            });
+        }
+
+        Ok(TargetAnalysis {
+            sample_rate: spec.sample_rate,
+            original_channels: input.audio.channels,
+            total_frames: grid.total_frames,
+            frame_size_frames: spec.frame_size_frames,
+            hop_size_frames: spec.hop_size_frames,
+            frames,
+        })
+    }
+
+    pub fn analyze_against_corpus(
+        &self,
+        corpus_plan: &CorpusPlan,
+        input: &TargetInput,
+        normalization: &DescriptorNormalization,
+    ) -> Result<TargetAnalysis, String> {
+        self.validate_alignment(corpus_plan)?;
+
+        let mut analysis = self.analyze(input)?;
+        analysis.apply_normalization(normalization);
+        Ok(analysis)
+    }
+}
+
 impl From<&TargetConfig> for TargetPlan {
     fn from(config: &TargetConfig) -> Self {
         Self {
@@ -55,10 +113,60 @@ pub struct TargetFrameGrid {
     pub frames: Vec<TargetFrameSpan>,
 }
 
+impl TargetFrameGrid {
+    pub fn build(total_frames: usize, spec: TargetFrameSpec) -> Self {
+        if total_frames < spec.frame_size_frames {
+            return Self {
+                total_frames,
+                frames: Vec::new(),
+            };
+        }
+
+        let frame_count = 1 + (total_frames - spec.frame_size_frames) / spec.hop_size_frames;
+        let mut frames = Vec::with_capacity(frame_count);
+        let mut start_frame = 0;
+
+        while start_frame + spec.frame_size_frames <= total_frames {
+            frames.push(TargetFrameSpan {
+                start_frame,
+                len_frames: spec.frame_size_frames,
+            });
+            start_frame += spec.hop_size_frames;
+        }
+
+        Self {
+            total_frames,
+            frames,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TargetInput {
     pub path: PathBuf,
     pub audio: AudioBuffer,
+}
+
+impl TargetInput {
+    pub fn load(config: &TargetConfig) -> Result<Self, String> {
+        Self::load_from_path(&config.path)
+    }
+
+    pub fn load_from_path<P>(path: P) -> Result<Self, String>
+    where
+        P: AsRef<Path>,
+    {
+        let path = path.as_ref();
+        if path.as_os_str().is_empty() {
+            return Err("target path must not be empty".to_string());
+        }
+
+        let audio = crate::audio::read_wav(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            audio,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -80,119 +188,11 @@ pub struct TargetAnalysis {
     pub frames: Vec<TargetAnalysisFrame>,
 }
 
-pub fn load_target_audio(config: &TargetConfig) -> Result<TargetInput, String> {
-    load_target_audio_from_path(&config.path)
-}
-
-pub fn load_target_audio_from_path<P>(path: P) -> Result<TargetInput, String>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    if path.as_os_str().is_empty() {
-        return Err("target path must not be empty".to_string());
-    }
-
-    let audio = crate::audio::read_wav(path)?;
-    Ok(TargetInput {
-        path: path.to_path_buf(),
-        audio,
-    })
-}
-
-pub fn validate_target_alignment(
-    target_plan: &TargetPlan,
-    corpus_plan: &CorpusPlan,
-) -> Result<(), String> {
-    if target_plan.frame_size_ms != corpus_plan.grain_size_ms {
-        return Err(format!(
-            "target frame_size_ms must match corpus grain_size_ms, found {} and {}",
-            target_plan.frame_size_ms, corpus_plan.grain_size_ms
-        ));
-    }
-
-    Ok(())
-}
-
-pub fn build_target_frame_grid(total_frames: usize, spec: TargetFrameSpec) -> TargetFrameGrid {
-    if total_frames < spec.frame_size_frames {
-        return TargetFrameGrid {
-            total_frames,
-            frames: Vec::new(),
-        };
-    }
-
-    let frame_count = 1 + (total_frames - spec.frame_size_frames) / spec.hop_size_frames;
-    let mut frames = Vec::with_capacity(frame_count);
-    let mut start_frame = 0;
-
-    while start_frame + spec.frame_size_frames <= total_frames {
-        frames.push(TargetFrameSpan {
-            start_frame,
-            len_frames: spec.frame_size_frames,
-        });
-        start_frame += spec.hop_size_frames;
-    }
-
-    TargetFrameGrid {
-        total_frames,
-        frames,
-    }
-}
-
-pub fn analyze_target_input(
-    plan: &TargetPlan,
-    input: &TargetInput,
-) -> Result<TargetAnalysis, String> {
-    let mono_samples = mixdown_to_mono(&input.audio);
-    let spec = TargetFrameSpec::from_plan(plan, input.audio.sample_rate)?;
-    let grid = build_target_frame_grid(mono_samples.len(), spec);
-    let mut extractor = BaselineDescriptorExtractor::new(spec.sample_rate, spec.frame_size_frames)?;
-    let mut frames = Vec::with_capacity(grid.frames.len());
-
-    for frame in &grid.frames {
-        let start = frame.start_frame;
-        let end = start + frame.len_frames;
-        let raw_descriptor = extractor.extract_frame(&mono_samples[start..end])?;
-
-        frames.push(TargetAnalysisFrame {
-            start_frame: frame.start_frame,
-            len_frames: frame.len_frames,
-            rms: root_mean_square(&mono_samples[start..end]),
-            raw_descriptor,
-            normalized_descriptor: raw_descriptor,
-        });
-    }
-
-    Ok(TargetAnalysis {
-        sample_rate: spec.sample_rate,
-        original_channels: input.audio.channels,
-        total_frames: grid.total_frames,
-        frame_size_frames: spec.frame_size_frames,
-        hop_size_frames: spec.hop_size_frames,
-        frames,
-    })
-}
-
-pub fn analyze_target_against_corpus(
-    target_plan: &TargetPlan,
-    corpus_plan: &CorpusPlan,
-    input: &TargetInput,
-    normalization: &DescriptorNormalization,
-) -> Result<TargetAnalysis, String> {
-    validate_target_alignment(target_plan, corpus_plan)?;
-
-    let mut analysis = analyze_target_input(target_plan, input)?;
-    apply_target_normalization(&mut analysis, normalization);
-    Ok(analysis)
-}
-
-pub fn apply_target_normalization(
-    analysis: &mut TargetAnalysis,
-    normalization: &DescriptorNormalization,
-) {
-    for frame in &mut analysis.frames {
-        frame.normalized_descriptor = normalization.normalize(frame.raw_descriptor);
+impl TargetAnalysis {
+    pub fn apply_normalization(&mut self, normalization: &DescriptorNormalization) {
+        for frame in &mut self.frames {
+            frame.normalized_descriptor = normalization.normalize(frame.raw_descriptor);
+        }
     }
 }
 
@@ -229,11 +229,7 @@ fn root_mean_square(samples: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        TargetFrameGrid, TargetFrameSpan, TargetFrameSpec, TargetInput, TargetPlan,
-        analyze_target_against_corpus, analyze_target_input, build_target_frame_grid,
-        validate_target_alignment,
-    };
+    use super::{TargetFrameGrid, TargetFrameSpan, TargetFrameSpec, TargetInput, TargetPlan};
     use crate::{
         audio::AudioBuffer,
         corpus::CorpusPlan,
@@ -253,7 +249,8 @@ mod tests {
             mono_only: true,
         };
 
-        let error = validate_target_alignment(&target_plan, &corpus_plan)
+        let error = target_plan
+            .validate_alignment(&corpus_plan)
             .expect_err("misaligned target plan should fail");
 
         assert_eq!(
@@ -270,7 +267,7 @@ mod tests {
             hop_size_frames: 2,
         };
 
-        let grid = build_target_frame_grid(9, spec);
+        let grid = TargetFrameGrid::build(9, spec);
 
         assert_eq!(
             grid,
@@ -306,7 +303,7 @@ mod tests {
                 .expect("audio buffer"),
         };
 
-        let analysis = analyze_target_input(&plan, &input).expect("analysis should work");
+        let analysis = plan.analyze(&input).expect("analysis should work");
 
         assert_eq!(analysis.original_channels, 2);
         assert_eq!(analysis.frame_size_frames, 100);
@@ -343,9 +340,9 @@ mod tests {
         ])
         .expect("normalization");
 
-        let analysis =
-            analyze_target_against_corpus(&target_plan, &corpus_plan, &input, &normalization)
-                .expect("aligned analysis should work");
+        let analysis = target_plan
+            .analyze_against_corpus(&corpus_plan, &input, &normalization)
+            .expect("aligned analysis should work");
 
         assert_eq!(analysis.frames.len(), 2);
         assert_ne!(

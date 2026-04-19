@@ -29,4 +29,4 @@
 - `candidate_scoring` isolates the per-grain inner loop used by matching, including descriptor distance, seek distance, and source-switch penalty.
 - `greedy_matching` measures the full `target_frames x corpus_grains` selection pass; this should dominate as corpus size grows.
 - `overlap_add_synthesis` measures window generation reuse plus sample accumulation across scheduled grains.
-- `offline_render_pipeline` exercises the current complete reconstruction path (`greedy_match -> synthesize_match_sequence -> render_reconstruction`) to show whether matching, overlap-add, or post-convolution dominates total offline render time.
+- `offline_render_pipeline` exercises the current complete reconstruction path (`greedy_match -> SynthesisPlan::synthesize -> render_reconstruction`) to show whether matching, overlap-add, or post-convolution dominates total offline render time.

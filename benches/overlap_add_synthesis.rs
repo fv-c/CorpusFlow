@@ -3,7 +3,7 @@ mod common;
 use common::{
     build_corpus_index, build_corpus_sources, build_match_sequence, build_synthesis_plan,
 };
-use corpusflow::synthesis::{SynthesisPlan, synthesize_match_sequence};
+use corpusflow::synthesis::SynthesisPlan;
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_overlap_add_synthesis(c: &mut Criterion) {
@@ -16,8 +16,7 @@ fn bench_overlap_add_synthesis(c: &mut Criterion) {
     c.bench_function("overlap_add_synthesis_256_grains", |b| {
         b.iter(|| {
             black_box(
-                synthesize_match_sequence(
-                    black_box(&plan),
+                plan.synthesize(
                     black_box(&corpus_sources),
                     black_box(&corpus_index),
                     black_box(&sequence),

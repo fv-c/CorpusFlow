@@ -4,9 +4,7 @@ use common::{
     build_corpus_index, build_corpus_sources, build_matching_model, build_render_plan,
     build_synthesis_plan, build_target_analysis,
 };
-use corpusflow::{
-    matching::greedy_match, rendering::render_reconstruction, synthesis::synthesize_match_sequence,
-};
+use corpusflow::{matching::greedy_match, rendering::render_reconstruction};
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 fn bench_offline_render_pipeline(c: &mut Criterion) {
@@ -26,13 +24,13 @@ fn bench_offline_render_pipeline(c: &mut Criterion) {
                 black_box(&target_analysis),
             )
             .expect("match");
-            let synthesis = synthesize_match_sequence(
-                black_box(&synthesis_plan),
-                black_box(&corpus_sources),
-                black_box(&corpus_index),
-                black_box(&sequence),
-            )
-            .expect("synthesis");
+            let synthesis = synthesis_plan
+                .synthesize(
+                    black_box(&corpus_sources),
+                    black_box(&corpus_index),
+                    black_box(&sequence),
+                )
+                .expect("synthesis");
 
             black_box(render_reconstruction(
                 black_box(&render_plan),

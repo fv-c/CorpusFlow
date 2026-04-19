@@ -20,6 +20,33 @@ impl CorpusPlan {
             mono_only: config.mono_only,
         }
     }
+
+    pub fn load_sources(&self, root: &str) -> Result<Vec<CorpusSourceFile>, String> {
+        load_corpus_sources_from_path(root, self.mono_only)
+    }
+
+    pub fn segment_sources(
+        &self,
+        sources: &[CorpusSourceFile],
+    ) -> Result<Vec<CorpusSourceSegmentation>, String> {
+        let mut segmented = Vec::with_capacity(sources.len());
+
+        for (source_index, source) in sources.iter().enumerate() {
+            let spec = GrainSpec::from_plan(self, source.audio.sample_rate)?;
+            let grid = GrainGrid::build(source.audio.frame_count(), spec);
+
+            segmented.push(CorpusSourceSegmentation {
+                source_index,
+                sample_rate: spec.sample_rate,
+                total_frames: grid.total_frames,
+                grain_size_frames: spec.grain_size_frames,
+                grain_hop_frames: spec.grain_hop_frames,
+                grains: grid.grains,
+            });
+        }
+
+        Ok(segmented)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +82,34 @@ pub struct GrainGrid {
     pub grains: Vec<GrainSpan>,
 }
 
+impl GrainGrid {
+    pub fn build(total_frames: usize, spec: GrainSpec) -> Self {
+        if total_frames < spec.grain_size_frames {
+            return Self {
+                total_frames,
+                grains: Vec::new(),
+            };
+        }
+
+        let grain_count = 1 + (total_frames - spec.grain_size_frames) / spec.grain_hop_frames;
+        let mut grains = Vec::with_capacity(grain_count);
+        let mut start_frame = 0;
+
+        while start_frame + spec.grain_size_frames <= total_frames {
+            grains.push(GrainSpan {
+                start_frame,
+                len_frames: spec.grain_size_frames,
+            });
+            start_frame += spec.grain_hop_frames;
+        }
+
+        Self {
+            total_frames,
+            grains,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CorpusSourceFile {
     pub path: PathBuf,
@@ -71,11 +126,7 @@ pub struct CorpusSourceSegmentation {
     pub grains: Vec<GrainSpan>,
 }
 
-pub fn load_corpus_sources(config: &CorpusConfig) -> Result<Vec<CorpusSourceFile>, String> {
-    load_corpus_sources_from_path(&config.root, config.mono_only)
-}
-
-pub fn load_corpus_sources_from_path<P>(
+fn load_corpus_sources_from_path<P>(
     root: P,
     mono_only: bool,
 ) -> Result<Vec<CorpusSourceFile>, String>
@@ -103,55 +154,6 @@ where
     }
 
     Ok(sources)
-}
-
-pub fn build_grain_grid(total_frames: usize, spec: GrainSpec) -> GrainGrid {
-    if total_frames < spec.grain_size_frames {
-        return GrainGrid {
-            total_frames,
-            grains: Vec::new(),
-        };
-    }
-
-    let grain_count = 1 + (total_frames - spec.grain_size_frames) / spec.grain_hop_frames;
-    let mut grains = Vec::with_capacity(grain_count);
-    let mut start_frame = 0;
-
-    while start_frame + spec.grain_size_frames <= total_frames {
-        grains.push(GrainSpan {
-            start_frame,
-            len_frames: spec.grain_size_frames,
-        });
-        start_frame += spec.grain_hop_frames;
-    }
-
-    GrainGrid {
-        total_frames,
-        grains,
-    }
-}
-
-pub fn segment_corpus_sources(
-    plan: &CorpusPlan,
-    sources: &[CorpusSourceFile],
-) -> Result<Vec<CorpusSourceSegmentation>, String> {
-    let mut segmented = Vec::with_capacity(sources.len());
-
-    for (source_index, source) in sources.iter().enumerate() {
-        let spec = GrainSpec::from_plan(plan, source.audio.sample_rate)?;
-        let grid = build_grain_grid(source.audio.frame_count(), spec);
-
-        segmented.push(CorpusSourceSegmentation {
-            source_index,
-            sample_rate: spec.sample_rate,
-            total_frames: grid.total_frames,
-            grain_size_frames: spec.grain_size_frames,
-            grain_hop_frames: spec.grain_hop_frames,
-            grains: grid.grains,
-        });
-    }
-
-    Ok(segmented)
 }
 
 fn discover_wav_files(root: &Path) -> Result<Vec<PathBuf>, String> {
@@ -214,9 +216,7 @@ fn ms_to_frames(sample_rate: u32, milliseconds: u32) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        GrainGrid, GrainSpan, GrainSpec, build_grain_grid, ms_to_frames, segment_corpus_sources,
-    };
+    use super::{GrainGrid, GrainSpan, GrainSpec, ms_to_frames};
     use crate::audio::MonoBuffer;
     use crate::corpus::{CorpusPlan, CorpusSourceFile};
     use std::path::PathBuf;
@@ -235,7 +235,7 @@ mod tests {
             grain_hop_frames: 2,
         };
 
-        let grid = build_grain_grid(10, spec);
+        let grid = GrainGrid::build(10, spec);
 
         assert_eq!(
             grid,
@@ -271,7 +271,7 @@ mod tests {
             grain_hop_frames: 4,
         };
 
-        let grid = build_grain_grid(7, spec);
+        let grid = GrainGrid::build(7, spec);
 
         assert_eq!(
             grid,
@@ -300,7 +300,9 @@ mod tests {
             },
         ];
 
-        let segmented = segment_corpus_sources(&plan, &sources).expect("segmentation should work");
+        let segmented = plan
+            .segment_sources(&sources)
+            .expect("segmentation should work");
 
         assert_eq!(segmented.len(), 2);
         assert_eq!(segmented[0].grain_size_frames, 100);

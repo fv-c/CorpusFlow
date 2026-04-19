@@ -8,9 +8,9 @@ use std::{
 use corpusflow::{
     audio::{AudioBuffer, read_wav},
     config::{CorpusConfig, RenderMode, TargetConfig},
-    corpus::load_corpus_sources,
+    corpus::CorpusPlan,
     rendering::write_output_wav,
-    target::load_target_audio,
+    target::TargetInput,
 };
 use hound::{SampleFormat, WavSpec, WavWriter};
 
@@ -31,7 +31,9 @@ fn loads_corpus_wavs_recursively_in_sorted_order() {
         mono_only: true,
     };
 
-    let corpus = load_corpus_sources(&config).expect("corpus should load");
+    let corpus = CorpusPlan::from_config(&config)
+        .load_sources(&config.root)
+        .expect("corpus should load");
     let paths = corpus
         .iter()
         .map(|item| {
@@ -60,7 +62,9 @@ fn rejects_stereo_corpus_input() {
         mono_only: true,
     };
 
-    let error = load_corpus_sources(&config).expect_err("stereo corpus must fail");
+    let error = CorpusPlan::from_config(&config)
+        .load_sources(&config.root)
+        .expect_err("stereo corpus must fail");
     assert!(error.contains("expected mono WAV input"));
 }
 
@@ -75,7 +79,7 @@ fn loads_stereo_target_audio() {
         hop_size_ms: 50,
     };
 
-    let target = load_target_audio(&config).expect("target should load");
+    let target = TargetInput::load(&config).expect("target should load");
 
     assert_eq!(target.audio.channels, 2);
     assert_eq!(target.audio.frame_count(), 2);
