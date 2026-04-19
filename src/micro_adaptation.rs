@@ -94,23 +94,59 @@ pub fn apply_carrier_envelope_in_place(
         return Err("carrier envelope hop_size_frames must be > 0".to_string());
     }
 
-    let mut segment_gains = Vec::with_capacity(profile.frame_rms.len());
-    let mut start_frame = 0;
+    let mut segment_starts = Vec::with_capacity(profile.frame_rms.len());
+    let mut start_frame: usize = 0;
 
-    for &target_rms in &profile.frame_rms {
+    for _ in &profile.frame_rms {
+        segment_starts.push(start_frame);
+        start_frame = start_frame.saturating_add(profile.hop_size_frames);
+    }
+
+    apply_carrier_envelope_segments_in_place(samples, mode, &segment_starts, &profile.frame_rms)
+}
+
+pub fn apply_carrier_envelope_segments_in_place(
+    samples: &mut [f32],
+    mode: EnvelopeAdaptationMode,
+    segment_starts: &[usize],
+    target_rms: &[f32],
+) -> Result<EnvelopeAdjustment, String> {
+    if matches!(mode, EnvelopeAdaptationMode::Off)
+        || samples.is_empty()
+        || segment_starts.is_empty()
+        || target_rms.is_empty()
+    {
+        return Ok(EnvelopeAdjustment {
+            segment_gains: Vec::new(),
+        });
+    }
+
+    if segment_starts.len() != target_rms.len() {
+        return Err("carrier envelope segment starts must match target rms count".to_string());
+    }
+
+    let mut segment_gains = Vec::with_capacity(target_rms.len());
+
+    for (segment_index, (&start_frame, &segment_target_rms)) in
+        segment_starts.iter().zip(target_rms.iter()).enumerate()
+    {
+        if segment_index > 0 && start_frame <= segment_starts[segment_index - 1] {
+            return Err("carrier envelope segment starts must be strictly increasing".to_string());
+        }
+
         if start_frame >= samples.len() {
             break;
         }
 
-        let end_frame = (start_frame + profile.hop_size_frames).min(samples.len());
-        let gain = match_segment_rms(&mut samples[start_frame..end_frame], target_rms.max(0.0));
-        segment_gains.push(gain);
-        start_frame = end_frame;
-    }
-
-    if start_frame < samples.len() {
-        let tail_target_rms = profile.frame_rms.last().copied().unwrap_or(0.0).max(0.0);
-        let gain = match_segment_rms(&mut samples[start_frame..], tail_target_rms);
+        let end_frame = segment_starts
+            .get(segment_index + 1)
+            .copied()
+            .unwrap_or(samples.len())
+            .min(samples.len());
+        let gain = match_segment_rms(
+            &mut samples[start_frame..end_frame],
+            segment_target_rms.max(0.0),
+        );
         segment_gains.push(gain);
     }
 
@@ -148,7 +184,8 @@ fn root_mean_square(samples: &[f32]) -> f32 {
 mod tests {
     use super::{
         CarrierEnvelopeProfile, MicroAdaptationPlan, adapt_grain_gain_in_place,
-        apply_carrier_envelope_in_place, root_mean_square,
+        apply_carrier_envelope_in_place, apply_carrier_envelope_segments_in_place,
+        root_mean_square,
     };
     use crate::{
         config::{EnvelopeAdaptationMode, GainAdaptationMode, MicroAdaptationConfig},
@@ -240,8 +277,26 @@ mod tests {
         )
         .expect("tail shaping should succeed");
 
-        assert_eq!(adjustment.segment_gains, vec![1.0, 0.5, 0.5]);
+        assert_eq!(adjustment.segment_gains, vec![1.0, 0.5]);
         assert_eq!(root_mean_square(&samples[4..7]), 0.5);
+    }
+
+    #[test]
+    fn carrier_envelope_segments_follow_explicit_segment_starts() {
+        let mut samples = vec![1.0; 12];
+
+        let adjustment = apply_carrier_envelope_segments_in_place(
+            &mut samples,
+            EnvelopeAdaptationMode::InheritCarrierRms,
+            &[0, 4, 8],
+            &[1.0, 0.5, 0.25],
+        )
+        .expect("segment shaping should succeed");
+
+        assert_eq!(adjustment.segment_gains, vec![1.0, 0.5, 0.25]);
+        assert_eq!(root_mean_square(&samples[0..4]), 1.0);
+        assert_eq!(root_mean_square(&samples[4..8]), 0.5);
+        assert_eq!(root_mean_square(&samples[8..12]), 0.25);
     }
 
     fn test_target_analysis(frame_rms: Vec<f32>, hop_size_frames: usize) -> TargetAnalysis {

@@ -8,8 +8,7 @@ use crate::{
     index::CorpusIndex,
     matching::MatchSequence,
     micro_adaptation::{
-        CarrierEnvelopeProfile, MicroAdaptationPlan, adapt_grain_gain_in_place,
-        apply_carrier_envelope_in_place,
+        MicroAdaptationPlan, adapt_grain_gain_in_place, apply_carrier_envelope_segments_in_place,
     },
     target::TargetAnalysis,
 };
@@ -192,11 +191,28 @@ impl SynthesisPlan {
         }
 
         if !matches!(micro_adaptation.envelope, EnvelopeAdaptationMode::Off) {
-            let profile = CarrierEnvelopeProfile::from_target_analysis(target_analysis);
-            apply_carrier_envelope_in_place(
+            let mut envelope_segment_starts = Vec::with_capacity(scheduled_grains.len());
+            let mut envelope_target_rms = Vec::with_capacity(scheduled_grains.len());
+
+            for grain in &scheduled_grains {
+                let target_frame = target_analysis
+                    .frames
+                    .get(grain.match_step_index)
+                    .ok_or_else(|| {
+                        format!(
+                            "carrier envelope requires target frame {} for scheduled grain {}",
+                            grain.match_step_index, grain.match_step_index
+                        )
+                    })?;
+                envelope_segment_starts.push(grain.output_start_frame);
+                envelope_target_rms.push(target_frame.rms);
+            }
+
+            apply_carrier_envelope_segments_in_place(
                 &mut output_samples,
                 micro_adaptation.envelope,
-                &profile,
+                &envelope_segment_starts,
+                &envelope_target_rms,
             )?;
         }
 
@@ -624,7 +640,7 @@ mod tests {
     }
 
     #[test]
-    fn synthesize_with_micro_adaptation_applies_target_envelope_after_overlap_add() {
+    fn synthesize_with_micro_adaptation_maps_target_envelope_onto_synthesis_schedule() {
         let plan = SynthesisPlan {
             window: WindowKind::Hann,
             output_hop_ms: 4,
@@ -653,8 +669,8 @@ mod tests {
                 scale: [1.0; 5],
             },
         };
-        let sequence = test_match_sequence(vec![0]);
-        let target = test_target_analysis(vec![0.25, 0.5], 2);
+        let sequence = test_match_sequence(vec![0, 0, 0]);
+        let target = test_target_analysis(vec![1.0, 0.5, 0.25], 2);
         let micro_plan = MicroAdaptationPlan {
             gain: GainAdaptationMode::Off,
             envelope: EnvelopeAdaptationMode::InheritCarrierRms,
@@ -671,16 +687,27 @@ mod tests {
             .expect("synthesis");
 
         let first_segment_rms = ((output.audio.samples[0] * output.audio.samples[0]
-            + output.audio.samples[1] * output.audio.samples[1])
-            / 2.0)
-            .sqrt();
-        let second_segment_rms = ((output.audio.samples[2] * output.audio.samples[2]
+            + output.audio.samples[1] * output.audio.samples[1]
+            + output.audio.samples[2] * output.audio.samples[2]
             + output.audio.samples[3] * output.audio.samples[3])
-            / 2.0)
+            / 4.0)
+            .sqrt();
+        let second_segment_rms = ((output.audio.samples[4] * output.audio.samples[4]
+            + output.audio.samples[5] * output.audio.samples[5]
+            + output.audio.samples[6] * output.audio.samples[6]
+            + output.audio.samples[7] * output.audio.samples[7])
+            / 4.0)
+            .sqrt();
+        let third_segment_rms = ((output.audio.samples[8] * output.audio.samples[8]
+            + output.audio.samples[9] * output.audio.samples[9]
+            + output.audio.samples[10] * output.audio.samples[10]
+            + output.audio.samples[11] * output.audio.samples[11])
+            / 4.0)
             .sqrt();
 
-        assert!((first_segment_rms - 0.25).abs() < 1.0e-6);
+        assert!((first_segment_rms - 1.0).abs() < 1.0e-6);
         assert!((second_segment_rms - 0.5).abs() < 1.0e-6);
+        assert!((third_segment_rms - 0.25).abs() < 1.0e-6);
     }
 
     fn test_match_sequence(selected_grain_indices: Vec<usize>) -> MatchSequence {

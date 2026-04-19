@@ -59,7 +59,7 @@
 - `corpus`: fixed-grid grain planning for corpus ingestion. `root` is the WAV file or directory root. `mono_only=true` keeps the mono corpus baseline explicit by downmixing stereo corpus WAVs before segmentation.
 - `target`: target analysis input and frame grid. `path` is the target WAV path.
 - `matching`: baseline target and transition cost weights. All values must be finite.
-- `micro_adaptation`: deterministic post-selection gain and carrier-envelope modes. Allowed values are `off`, `match-target-rms`, and `inherit-carrier-rms`.
+- `micro_adaptation`: deterministic post-selection gain and carrier-envelope modes. Allowed values are `off`, `match-target-rms`, and `inherit-carrier-rms`. Carrier-envelope transfer follows the scheduled synthesis timeline, so it stays aligned even when `target.hop_size_ms` and `synthesis.output_hop_ms` differ.
 - `synthesis`: overlap-add windowing and scheduling. Current `window` baseline is `hann`.
 - `rendering`: output sample rate, output routing, and optional post-convolution. Corpus and target inputs are resampled to `output_sample_rate` before segmentation, analysis, and synthesis. When post-convolution is enabled, the convolution audio comes either from the original target file (`source = "target"`) or from an explicit WAV path (`source = "audio-file"` with `audio_path`). Ambisonics stays reserved behind explicit JSON positioning input.
 
