@@ -1,9 +1,17 @@
 use crate::{
     audio::MonoBuffer,
-    config::{OverlapScheduleMode, SynthesisConfig, WindowKind},
+    config::{
+        EnvelopeAdaptationMode, GainAdaptationMode, OverlapScheduleMode, SynthesisConfig,
+        WindowKind,
+    },
     corpus::CorpusSourceFile,
     index::CorpusIndex,
     matching::MatchSequence,
+    micro_adaptation::{
+        CarrierEnvelopeProfile, MicroAdaptationPlan, adapt_grain_gain_in_place,
+        apply_carrier_envelope_in_place,
+    },
+    target::TargetAnalysis,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +96,36 @@ impl SynthesisPlan {
         corpus_index: &CorpusIndex,
         sequence: &MatchSequence,
     ) -> Result<SynthesisOutput, String> {
+        let empty_target = TargetAnalysis {
+            sample_rate: 0,
+            original_channels: 0,
+            total_frames: 0,
+            frame_size_frames: 0,
+            hop_size_frames: 0,
+            frames: Vec::new(),
+        };
+        let micro_adaptation = MicroAdaptationPlan {
+            gain: GainAdaptationMode::Off,
+            envelope: EnvelopeAdaptationMode::Off,
+        };
+
+        self.synthesize_with_micro_adaptation(
+            corpus_sources,
+            corpus_index,
+            sequence,
+            &micro_adaptation,
+            &empty_target,
+        )
+    }
+
+    pub fn synthesize_with_micro_adaptation(
+        &self,
+        corpus_sources: &[CorpusSourceFile],
+        corpus_index: &CorpusIndex,
+        sequence: &MatchSequence,
+        micro_adaptation: &MicroAdaptationPlan,
+        target_analysis: &TargetAnalysis,
+    ) -> Result<SynthesisOutput, String> {
         let sample_rate = resolve_synthesis_sample_rate(corpus_sources, corpus_index, sequence)?;
         let scheduled_grains = self.schedule(sample_rate, corpus_index, sequence)?;
         let output_frames = scheduled_grains
@@ -98,6 +136,7 @@ impl SynthesisPlan {
         let mut output_samples = vec![0.0; output_frames];
         let mut window_cache_len = 0;
         let mut window_cache = Vec::new();
+        let mut grain_scratch = Vec::new();
 
         for grain in &scheduled_grains {
             let source = corpus_sources.get(grain.source_index).ok_or_else(|| {
@@ -123,10 +162,42 @@ impl SynthesisPlan {
             }
 
             let input = &source.audio.samples[grain.source_start_frame..source_end];
+            let grain_samples = if matches!(micro_adaptation.gain, GainAdaptationMode::Off) {
+                input
+            } else {
+                let target_frame = target_analysis
+                    .frames
+                    .get(grain.match_step_index)
+                    .ok_or_else(|| {
+                        format!(
+                            "micro adaptation requires target frame {} for scheduled grain {}",
+                            grain.match_step_index, grain.match_step_index
+                        )
+                    })?;
+
+                grain_scratch.clear();
+                grain_scratch.extend_from_slice(input);
+                adapt_grain_gain_in_place(
+                    &mut grain_scratch,
+                    micro_adaptation.gain,
+                    target_frame.rms,
+                );
+                &grain_scratch
+            };
+
             for frame_index in 0..grain.len_frames {
                 output_samples[grain.output_start_frame + frame_index] +=
-                    input[frame_index] * window_cache[frame_index];
+                    grain_samples[frame_index] * window_cache[frame_index];
             }
+        }
+
+        if !matches!(micro_adaptation.envelope, EnvelopeAdaptationMode::Off) {
+            let profile = CarrierEnvelopeProfile::from_target_analysis(target_analysis);
+            apply_carrier_envelope_in_place(
+                &mut output_samples,
+                micro_adaptation.envelope,
+                &profile,
+            )?;
         }
 
         Ok(SynthesisOutput {
@@ -300,11 +371,13 @@ mod tests {
     use super::{ScheduledGrain, SynthesisFrameSpec, SynthesisPlan, build_window};
     use crate::{
         audio::MonoBuffer,
-        config::{OverlapScheduleMode, WindowKind},
+        config::{EnvelopeAdaptationMode, GainAdaptationMode, OverlapScheduleMode, WindowKind},
         corpus::CorpusSourceFile,
         descriptor::{DescriptorNormalization, DescriptorVector},
         index::{CorpusGrainEntry, CorpusIndex, CorpusSourceInfo},
         matching::{MatchCost, MatchSequence, MatchStep},
+        micro_adaptation::MicroAdaptationPlan,
+        target::{TargetAnalysis, TargetAnalysisFrame},
     };
     use std::path::PathBuf;
 
@@ -497,6 +570,119 @@ mod tests {
         );
     }
 
+    #[test]
+    fn synthesize_with_micro_adaptation_matches_target_frame_rms_before_windowing() {
+        let plan = SynthesisPlan {
+            window: WindowKind::Hann,
+            output_hop_ms: 4,
+            overlap_schedule: OverlapScheduleMode::Fixed,
+            irregularity_ms: 0,
+        };
+        let corpus_sources = vec![CorpusSourceFile {
+            path: PathBuf::from("source.wav"),
+            audio: MonoBuffer::new(1_000, vec![0.25, -0.25, 0.25, -0.25]).expect("source"),
+        }];
+        let corpus_index = CorpusIndex {
+            sources: vec![CorpusSourceInfo {
+                path: PathBuf::from("source.wav"),
+                sample_rate: 1_000,
+                total_frames: 4,
+            }],
+            grains: vec![CorpusGrainEntry {
+                source_index: 0,
+                start_frame: 0,
+                len_frames: 4,
+            }],
+            raw_descriptors: vec![DescriptorVector::new([0.0; 5])],
+            normalized_descriptors: vec![DescriptorVector::new([0.0; 5])],
+            normalization: DescriptorNormalization {
+                mean: [0.0; 5],
+                scale: [1.0; 5],
+            },
+        };
+        let sequence = test_match_sequence(vec![0]);
+        let target = test_target_analysis(vec![0.5], 4);
+        let micro_plan = MicroAdaptationPlan {
+            gain: GainAdaptationMode::MatchTargetRms,
+            envelope: EnvelopeAdaptationMode::Off,
+        };
+
+        let output = plan
+            .synthesize_with_micro_adaptation(
+                &corpus_sources,
+                &corpus_index,
+                &sequence,
+                &micro_plan,
+                &target,
+            )
+            .expect("synthesis");
+
+        let expected = [0.0, -0.375, 0.375, 0.0];
+        for (actual, expected) in output.audio.samples.iter().zip(expected) {
+            assert!((actual - expected).abs() < 1.0e-6);
+        }
+    }
+
+    #[test]
+    fn synthesize_with_micro_adaptation_applies_target_envelope_after_overlap_add() {
+        let plan = SynthesisPlan {
+            window: WindowKind::Hann,
+            output_hop_ms: 4,
+            overlap_schedule: OverlapScheduleMode::Fixed,
+            irregularity_ms: 0,
+        };
+        let corpus_sources = vec![CorpusSourceFile {
+            path: PathBuf::from("source.wav"),
+            audio: MonoBuffer::new(1_000, vec![1.0, 1.0, 1.0, 1.0]).expect("source"),
+        }];
+        let corpus_index = CorpusIndex {
+            sources: vec![CorpusSourceInfo {
+                path: PathBuf::from("source.wav"),
+                sample_rate: 1_000,
+                total_frames: 4,
+            }],
+            grains: vec![CorpusGrainEntry {
+                source_index: 0,
+                start_frame: 0,
+                len_frames: 4,
+            }],
+            raw_descriptors: vec![DescriptorVector::new([0.0; 5])],
+            normalized_descriptors: vec![DescriptorVector::new([0.0; 5])],
+            normalization: DescriptorNormalization {
+                mean: [0.0; 5],
+                scale: [1.0; 5],
+            },
+        };
+        let sequence = test_match_sequence(vec![0]);
+        let target = test_target_analysis(vec![0.25, 0.5], 2);
+        let micro_plan = MicroAdaptationPlan {
+            gain: GainAdaptationMode::Off,
+            envelope: EnvelopeAdaptationMode::InheritCarrierRms,
+        };
+
+        let output = plan
+            .synthesize_with_micro_adaptation(
+                &corpus_sources,
+                &corpus_index,
+                &sequence,
+                &micro_plan,
+                &target,
+            )
+            .expect("synthesis");
+
+        let first_segment_rms = ((output.audio.samples[0] * output.audio.samples[0]
+            + output.audio.samples[1] * output.audio.samples[1])
+            / 2.0)
+            .sqrt();
+        let second_segment_rms = ((output.audio.samples[2] * output.audio.samples[2]
+            + output.audio.samples[3] * output.audio.samples[3])
+            / 2.0)
+            .sqrt();
+
+        assert!((first_segment_rms - 0.25).abs() < 1.0e-6);
+        assert!((second_segment_rms - 0.5).abs() < 1.0e-6);
+    }
+
     fn test_match_sequence(selected_grain_indices: Vec<usize>) -> MatchSequence {
         MatchSequence {
             total_cost: 0.0,
@@ -550,6 +736,27 @@ mod tests {
                 mean: [0.0; 5],
                 scale: [1.0; 5],
             },
+        }
+    }
+
+    fn test_target_analysis(frame_rms: Vec<f32>, hop_size_frames: usize) -> TargetAnalysis {
+        TargetAnalysis {
+            sample_rate: 1_000,
+            original_channels: 1,
+            total_frames: frame_rms.len() * hop_size_frames,
+            frame_size_frames: hop_size_frames,
+            hop_size_frames,
+            frames: frame_rms
+                .into_iter()
+                .enumerate()
+                .map(|(index, rms)| TargetAnalysisFrame {
+                    start_frame: index * hop_size_frames,
+                    len_frames: hop_size_frames,
+                    rms,
+                    raw_descriptor: DescriptorVector::new([0.0; 5]),
+                    normalized_descriptor: DescriptorVector::new([0.0; 5]),
+                })
+                .collect(),
         }
     }
 }

@@ -2,7 +2,7 @@
 
 ## CLI surface
 - `cargo run -- show-config`: print the canonical default config as pretty JSON.
-- `cargo run -- run --config PATH`: load JSON config, validate it, and run the current scaffold path.
+- `cargo run -- run [--config PATH] --output PATH`: load JSON config, run the offline pipeline, and write the rendered WAV output.
 - `cargo run -- validate-config PATH`: load JSON config and print the validated summary without running synthesis.
 
 ## Canonical default config
@@ -74,6 +74,12 @@
 - `post_convolution.dry_mix` and `wet_mix` must stay within `0.0..=1.0`
 - enabled post-convolution requires a non-empty finite impulse response
 - `rendering.mode = "ambisonics-reserved"` requires a readable positioning JSON with a non-empty strictly increasing trajectory starting at `time_ms = 0`
+
+## Run-time requirements
+- `run` requires a non-empty `corpus.root`.
+- `run` requires a non-empty `target.path`.
+- `run` requires an explicit `--output PATH`.
+- `run` creates the parent directory for the output WAV when it does not already exist.
 
 ## Enum values
 - `micro_adaptation.gain`: `off`, `match-target-rms`

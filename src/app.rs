@@ -1,7 +1,15 @@
+use std::{fs, path::Path};
+
 use crate::{
     cli::{CliCommand, ParsedCli, usage},
     config::AppConfig,
-    descriptor::baseline_descriptor_spec,
+    corpus::CorpusPlan,
+    index::CorpusIndex,
+    matching::{MatchingModel, greedy_match},
+    micro_adaptation::MicroAdaptationPlan,
+    rendering::{RenderPlan, render_reconstruction, write_output_wav},
+    synthesis::SynthesisPlan,
+    target::{TargetInput, TargetPlan},
 };
 
 pub fn run<I, S>(args: I) -> Result<String, String>
@@ -13,9 +21,12 @@ where
 
     let output = match cli.command {
         CliCommand::Help => usage(),
-        CliCommand::Run { config_path } => {
+        CliCommand::Run {
+            config_path,
+            output_path,
+        } => {
             let config = load_config(config_path.as_deref())?;
-            run_message(&config)
+            run_pipeline(&config, &output_path)?
         }
         CliCommand::ShowConfig => AppConfig::default().to_pretty_json()?,
         CliCommand::ValidateConfig { config_path } => validate_config_message(&config_path)?,
@@ -37,45 +48,94 @@ fn load_config(config_path: Option<&str>) -> Result<AppConfig, String> {
     Ok(config)
 }
 
-fn run_message(config: &AppConfig) -> String {
-    let descriptor = baseline_descriptor_spec();
+fn run_pipeline(config: &AppConfig, output_path: &str) -> Result<String, String> {
+    if output_path.trim().is_empty() {
+        return Err("run output path must not be empty".to_string());
+    }
+    if config.corpus.root.trim().is_empty() {
+        return Err("run requires corpus.root to be set".to_string());
+    }
+    if config.target.path.trim().is_empty() {
+        return Err("run requires target.path to be set".to_string());
+    }
 
-    format!(
-        "CorpusFlow scaffold ready: grain={}ms hop={}ms descriptor_dims={} matcher(alpha={}, beta={}) micro(gain={}, envelope={}) rendering(mode={}, convolution={})",
-        config.corpus.grain_size_ms,
-        config.corpus.grain_hop_ms,
-        descriptor.dimensions,
-        config.matching.alpha,
-        config.matching.beta,
-        config.micro_adaptation.gain.as_str(),
-        config.micro_adaptation.envelope.as_str(),
-        config.rendering.mode.as_str(),
-        if config.rendering.post_convolution.enabled {
-            "on"
-        } else {
-            "off"
-        },
-    )
+    let corpus_plan = CorpusPlan::from_config(&config.corpus);
+    let corpus_sources = corpus_plan.load_sources(&config.corpus.root)?;
+    let corpus_segmentations = corpus_plan.segment_sources(&corpus_sources)?;
+    let corpus_index = CorpusIndex::build(&corpus_sources, &corpus_segmentations)?;
+
+    let target_plan = TargetPlan::from(&config.target);
+    let target_input = TargetInput::load(&config.target)?;
+    let target_analysis = target_plan.analyze_against_corpus(
+        &corpus_plan,
+        &target_input,
+        &corpus_index.normalization,
+    )?;
+
+    let matching_model = MatchingModel::from(&config.matching);
+    let match_sequence = greedy_match(&matching_model, &corpus_index, &target_analysis)?;
+
+    let synthesis_plan = SynthesisPlan::from(&config.synthesis);
+    let micro_adaptation = MicroAdaptationPlan::from(&config.micro_adaptation);
+    let synthesis = synthesis_plan.synthesize_with_micro_adaptation(
+        &corpus_sources,
+        &corpus_index,
+        &match_sequence,
+        &micro_adaptation,
+        &target_analysis,
+    )?;
+
+    let render_plan = RenderPlan::from(&config.rendering);
+    let rendered = render_reconstruction(&render_plan, &synthesis.audio)?;
+    prepare_output_parent(output_path)?;
+    write_output_wav(output_path, config.rendering.mode, &rendered)?;
+
+    Ok(format!(
+        "render complete: output={} corpus_sources={} corpus_grains={} target_frames={} matched_steps={} rendered_channels={} rendered_frames={}",
+        output_path,
+        corpus_sources.len(),
+        corpus_index.len(),
+        target_analysis.frames.len(),
+        match_sequence.steps.len(),
+        rendered.channels,
+        rendered.frame_count(),
+    ))
+}
+
+fn prepare_output_parent(output_path: &str) -> Result<(), String> {
+    let path = Path::new(output_path);
+    let Some(parent) = path.parent() else {
+        return Ok(());
+    };
+    if parent.as_os_str().is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "failed to create output directory `{}`: {error}",
+            parent.display()
+        )
+    })
 }
 
 fn validate_config_message(config_path: &str) -> Result<String, String> {
     let config = AppConfig::from_json_file(config_path)?;
-    Ok(format!(
-        "config valid: {config_path}\n{}",
-        config.summary()
-    ))
+    Ok(format!("config valid: {config_path}\n{}", config.summary()))
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
         fs,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::atomic::{AtomicU64, Ordering},
         time::{SystemTime, UNIX_EPOCH},
     };
 
     use super::run;
+    use crate::audio::read_wav;
+    use hound::{SampleFormat, WavSpec, WavWriter};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -207,13 +267,101 @@ mod tests {
             "run",
             "--config",
             path.to_string_lossy().as_ref(),
+            "--output",
+            fixture.path().join("render.wav").to_string_lossy().as_ref(),
+        ])
+        .expect_err("run should fail until audio inputs exist");
+
+        assert!(output.contains("run requires corpus.root to be set"));
+    }
+
+    #[test]
+    fn run_executes_end_to_end_and_writes_output_wav() {
+        let fixture = TempFixtureDir::new();
+        fixture.create_dir("corpus");
+        fixture.write_pcm16_wav(
+            "corpus/source.wav",
+            1,
+            &[4_000, -4_000, 8_000, -8_000, 4_000, -4_000, 8_000, -8_000],
+        );
+        let target_path = fixture.write_pcm16_wav(
+            "target.wav",
+            1,
+            &[
+                6_000, -6_000, 10_000, -10_000, 6_000, -6_000, 10_000, -10_000,
+            ],
+        );
+        let output_path = fixture.path().join("renders/out.wav");
+        let config_path = fixture.write_text_file(
+            "release.json",
+            &format!(
+                r#"{{
+  "corpus": {{
+    "root": "{}",
+    "grain_size_ms": 1,
+    "grain_hop_ms": 1,
+    "mono_only": true
+  }},
+  "target": {{
+    "path": "{}",
+    "frame_size_ms": 1,
+    "hop_size_ms": 1
+  }},
+  "matching": {{
+    "alpha": 1.0,
+    "beta": 0.25,
+    "transition_descriptor_weight": 1.0,
+    "transition_seek_weight": 0.5,
+    "source_switch_penalty": 0.25
+  }},
+  "micro_adaptation": {{
+    "gain": "match-target-rms",
+    "envelope": "inherit-carrier-rms"
+  }},
+  "synthesis": {{
+    "window": "hann",
+    "output_hop_ms": 1,
+    "overlap_schedule": "fixed",
+    "irregularity_ms": 0
+  }},
+  "rendering": {{
+    "mode": "stereo",
+    "stereo_routing": "duplicate-mono",
+    "post_convolution": {{
+      "enabled": false,
+      "impulse_response": [],
+      "dry_mix": 1.0,
+      "wet_mix": 1.0,
+      "normalize_output": true
+    }},
+    "ambisonics": {{
+      "positioning_json_path": ""
+    }}
+  }}
+}}"#,
+                fixture.path().join("corpus").display(),
+                target_path.display()
+            ),
+        );
+
+        let output = run([
+            "corpusflow",
+            "run",
+            "--config",
+            config_path.to_string_lossy().as_ref(),
+            "--output",
+            output_path.to_string_lossy().as_ref(),
         ])
         .expect("run should succeed");
 
-        assert!(output.contains("grain=80ms hop=40ms"));
-        assert!(output.contains("matcher(alpha=2, beta=0.75)"));
-        assert!(output.contains("micro(gain=match-target-rms, envelope=inherit-carrier-rms)"));
-        assert!(output.contains("rendering(mode=stereo, convolution=off)"));
+        let rendered = read_wav(&output_path).expect("rendered WAV should load");
+
+        assert!(output.contains("render complete:"));
+        assert!(output.contains("corpus_sources=1"));
+        assert!(output.contains("matched_steps=8"));
+        assert_eq!(rendered.channels, 2);
+        assert_eq!(rendered.frame_count(), 8);
+        assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
     }
 
     struct TempFixtureDir {
@@ -245,6 +393,38 @@ mod tests {
             }
 
             fs::write(&path, contents).expect("fixture file should be written");
+            path
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+
+        fn create_dir(&self, relative: &str) {
+            fs::create_dir_all(self.path.join(relative)).expect("fixture dir should be created");
+        }
+
+        fn write_pcm16_wav(&self, relative: &str, channels: u16, samples: &[i16]) -> PathBuf {
+            let path = self.path.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("fixture parent dir should be created");
+            }
+
+            let spec = WavSpec {
+                channels,
+                sample_rate: 1_000,
+                bits_per_sample: 16,
+                sample_format: SampleFormat::Int,
+            };
+            let mut writer = WavWriter::create(&path, spec).expect("fixture wav should be created");
+
+            for &sample in samples {
+                writer
+                    .write_sample(sample)
+                    .expect("fixture sample should be written");
+            }
+
+            writer.finalize().expect("fixture wav should finalize");
             path
         }
     }

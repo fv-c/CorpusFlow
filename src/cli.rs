@@ -1,9 +1,14 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CliCommand {
     Help,
-    Run { config_path: Option<String> },
+    Run {
+        config_path: Option<String>,
+        output_path: String,
+    },
     ShowConfig,
-    ValidateConfig { config_path: String },
+    ValidateConfig {
+        config_path: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,20 +37,43 @@ impl ParsedCli {
     }
 
     fn parse_run(args: Vec<String>) -> Result<Self, String> {
-        match args.as_slice() {
-            [] => Ok(Self {
-                command: CliCommand::Run { config_path: None },
-            }),
-            [flag, path] if flag == "--config" => Ok(Self {
-                command: CliCommand::Run {
-                    config_path: Some(path.clone()),
-                },
-            }),
-            [flag] if flag == "--config" => {
-                Err(format!("missing value for `--config`\n\n{}", usage()))
+        let mut config_path = None;
+        let mut output_path = None;
+        let mut index = 0;
+
+        while index < args.len() {
+            match args[index].as_str() {
+                "--config" => {
+                    let Some(path) = args.get(index + 1) else {
+                        return Err(format!("missing value for `--config`\n\n{}", usage()));
+                    };
+                    config_path = Some(path.clone());
+                    index += 2;
+                }
+                "--output" => {
+                    let Some(path) = args.get(index + 1) else {
+                        return Err(format!("missing value for `--output`\n\n{}", usage()));
+                    };
+                    output_path = Some(path.clone());
+                    index += 2;
+                }
+                _ => return Err(format!("invalid arguments for `run`\n\n{}", usage())),
             }
-            _ => Err(format!("invalid arguments for `run`\n\n{}", usage())),
         }
+
+        let Some(output_path) = output_path else {
+            return Err(format!(
+                "missing required `--output PATH` for `run`\n\n{}",
+                usage()
+            ));
+        };
+
+        Ok(Self {
+            command: CliCommand::Run {
+                config_path,
+                output_path,
+            },
+        })
     }
 
     fn parse_show_config(args: Vec<String>) -> Result<Self, String> {
@@ -54,7 +82,10 @@ impl ParsedCli {
                 command: CliCommand::ShowConfig,
             })
         } else {
-            Err(format!("`show-config` does not accept arguments\n\n{}", usage()))
+            Err(format!(
+                "`show-config` does not accept arguments\n\n{}",
+                usage()
+            ))
         }
     }
 
@@ -69,7 +100,10 @@ impl ParsedCli {
                 "missing config path for `validate-config`\n\n{}",
                 usage()
             )),
-            _ => Err(format!("invalid arguments for `validate-config`\n\n{}", usage())),
+            _ => Err(format!(
+                "invalid arguments for `validate-config`\n\n{}",
+                usage()
+            )),
         }
     }
 }
@@ -80,7 +114,7 @@ pub fn usage() -> String {
         "",
         "USAGE:",
         "  corpusflow help",
-        "  corpusflow run [--config PATH]",
+        "  corpusflow run [--config PATH] --output PATH",
         "  corpusflow show-config",
         "  corpusflow validate-config PATH",
     ]
@@ -99,18 +133,53 @@ mod tests {
 
     #[test]
     fn parses_run_command() {
-        let cli = ParsedCli::parse(["corpusflow", "run"]).expect("cli should parse");
-        assert_eq!(cli.command, CliCommand::Run { config_path: None });
-    }
-
-    #[test]
-    fn parses_run_command_with_config_path() {
-        let cli = ParsedCli::parse(["corpusflow", "run", "--config", "release.json"])
+        let cli = ParsedCli::parse(["corpusflow", "run", "--output", "out.wav"])
             .expect("cli should parse");
         assert_eq!(
             cli.command,
             CliCommand::Run {
-                config_path: Some("release.json".to_string())
+                config_path: None,
+                output_path: "out.wav".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_run_command_with_config_path() {
+        let cli = ParsedCli::parse([
+            "corpusflow",
+            "run",
+            "--config",
+            "release.json",
+            "--output",
+            "render.wav",
+        ])
+        .expect("cli should parse");
+        assert_eq!(
+            cli.command,
+            CliCommand::Run {
+                config_path: Some("release.json".to_string()),
+                output_path: "render.wav".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_run_command_when_output_precedes_config() {
+        let cli = ParsedCli::parse([
+            "corpusflow",
+            "run",
+            "--output",
+            "render.wav",
+            "--config",
+            "release.json",
+        ])
+        .expect("cli should parse");
+        assert_eq!(
+            cli.command,
+            CliCommand::Run {
+                config_path: Some("release.json".to_string()),
+                output_path: "render.wav".to_string(),
             }
         );
     }
@@ -147,9 +216,22 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_run_output_value() {
+        let error =
+            ParsedCli::parse(["corpusflow", "run", "--output"]).expect_err("cli should fail");
+        assert!(error.contains("missing value for `--output`"));
+    }
+
+    #[test]
+    fn rejects_missing_run_output_flag() {
+        let error = ParsedCli::parse(["corpusflow", "run"]).expect_err("cli should fail");
+        assert!(error.contains("missing required `--output PATH`"));
+    }
+
+    #[test]
     fn rejects_show_config_arguments() {
-        let error = ParsedCli::parse(["corpusflow", "show-config", "extra"])
-            .expect_err("cli should fail");
+        let error =
+            ParsedCli::parse(["corpusflow", "show-config", "extra"]).expect_err("cli should fail");
         assert!(error.contains("`show-config` does not accept arguments"));
     }
 
