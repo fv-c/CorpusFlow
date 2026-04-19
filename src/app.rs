@@ -7,7 +7,10 @@ use std::{
 use crate::{
     audio::{AudioBuffer, MonoBuffer},
     cli::{CliCommand, ParsedCli, usage},
-    config::{AppConfig, PostConvolutionConfig, PostConvolutionSource},
+    config::{
+        AmbisonicsPositioningSpec, AppConfig, PostConvolutionConfig, PostConvolutionSource,
+        RenderMode, load_ambisonics_positioning_spec,
+    },
     corpus::{CorpusPlan, CorpusSourceFile},
     index::CorpusIndex,
     matching::{MatchingModel, greedy_match},
@@ -183,7 +186,29 @@ fn build_render_plan(config: &AppConfig, target_input: &TargetInput) -> Result<R
         target_input,
         config.rendering.output_sample_rate,
     )?;
+    render_plan.ambisonics.positioning = resolve_ambisonics_positioning(
+        config.rendering.mode,
+        &config.rendering.ambisonics.positioning_json_path,
+    )?;
     Ok(render_plan)
+}
+
+fn resolve_ambisonics_positioning(
+    mode: RenderMode,
+    positioning_json_path: &str,
+) -> Result<Option<AmbisonicsPositioningSpec>, String> {
+    if mode != RenderMode::AmbisonicsReserved {
+        return Ok(None);
+    }
+
+    let positioning_json_path = positioning_json_path.trim();
+    if positioning_json_path.is_empty() {
+        return Ok(None);
+    }
+
+    let spec = load_ambisonics_positioning_spec(positioning_json_path)?;
+    spec.validate()?;
+    Ok(Some(spec))
 }
 
 fn resolve_post_convolution_audio(
@@ -344,8 +369,8 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{ProgressMode, run, run_with_progress};
-    use crate::audio::read_wav;
+    use super::{ProgressMode, resolve_ambisonics_positioning, run, run_with_progress};
+    use crate::{audio::read_wav, config::RenderMode};
     use hound::{SampleFormat, WavSpec, WavWriter};
 
     static TEST_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -772,6 +797,56 @@ mod tests {
         assert_eq!(rendered.sample_rate, 1_000);
         assert_eq!(rendered.frame_count(), 9);
         assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
+    }
+
+    #[test]
+    fn non_ambisonics_modes_ignore_positioning_json_path() {
+        let positioning =
+            resolve_ambisonics_positioning(RenderMode::Mono, "missing-ambisonics-positioning.json")
+                .expect("mono rendering should ignore ambisonics positioning");
+
+        assert_eq!(positioning, None);
+    }
+
+    #[test]
+    fn ambisonics_mode_loads_positioning_spec() {
+        let fixture = TempFixtureDir::new();
+        let path = fixture.write_text_file(
+            "positioning.json",
+            r#"{
+  "space": "cartesian",
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "to_next": {
+        "curve": "hold"
+      }
+    }
+  ],
+  "jitter": {
+    "spread": {
+      "x": 0.08,
+      "y": 0.08,
+      "z": 0.04
+    }
+  }
+}"#,
+        );
+
+        let positioning = resolve_ambisonics_positioning(
+            RenderMode::AmbisonicsReserved,
+            path.to_string_lossy().as_ref(),
+        )
+        .expect("ambisonics positioning should load")
+        .expect("ambisonics positioning should be present");
+
+        assert_eq!(positioning.trajectory.len(), 1);
+        assert_eq!(positioning.trajectory[0].time_ms, 0);
     }
 
     #[test]

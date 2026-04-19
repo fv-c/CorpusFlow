@@ -2,7 +2,10 @@ use std::path::Path;
 
 use crate::{
     audio::{AudioBuffer, MonoBuffer},
-    config::{AmbisonicsConfig, PostConvolutionConfig, RenderMode, RenderingConfig, StereoRouting},
+    config::{
+        AmbisonicsConfig, AmbisonicsPositioningSpec, PostConvolutionConfig, RenderMode,
+        RenderingConfig, StereoRouting,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -22,9 +25,10 @@ pub struct PostConvolutionPlan {
     pub normalize_output: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct AmbisonicsRenderPlan {
     pub positioning_json_path: Option<String>,
+    pub positioning: Option<AmbisonicsPositioningSpec>,
 }
 
 impl From<&RenderingConfig> for RenderPlan {
@@ -48,6 +52,7 @@ impl From<&AmbisonicsConfig> for AmbisonicsRenderPlan {
             } else {
                 Some(positioning_json_path.to_string())
             },
+            positioning: None,
         }
     }
 }
@@ -289,24 +294,39 @@ mod tests {
         let json_path = fixture.write_text_file(
             "ambisonics-positioning.json",
             r#"{
+  "space": "cartesian",
+  "default_curve": "linear",
   "trajectory": [
     {
       "time_ms": 0,
-      "azimuth_deg": -15.0,
-      "elevation_deg": 0.0,
-      "distance": 1.0
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "to_next": {
+        "curve": "linear"
+      }
     },
     {
       "time_ms": 120,
-      "azimuth_deg": 20.0,
-      "elevation_deg": 8.0,
-      "distance": 1.15
+      "position": {
+        "x": 0.5,
+        "y": 0.4,
+        "z": 0.1
+      }
     }
   ],
   "jitter": {
-    "azimuth_deg": 3.0,
-    "elevation_deg": 1.5,
-    "distance": 0.05
+    "mode": "gaussian",
+    "per_grain": true,
+    "seed": 13,
+    "spread": {
+      "x": 0.08,
+      "y": 0.08,
+      "z": 0.04
+    },
+    "smoothing_ms": 80
   }
 }"#,
         );
@@ -344,6 +364,7 @@ mod tests {
     fn disabled_ambisonics() -> AmbisonicsRenderPlan {
         AmbisonicsRenderPlan {
             positioning_json_path: None,
+            positioning: None,
         }
     }
 

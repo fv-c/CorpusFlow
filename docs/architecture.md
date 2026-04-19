@@ -33,11 +33,11 @@
 - Carrier prosodic inheritance belongs to synthesis or micro-adaptation, not to corpus indexing or matching.
 - Global envelope transfer should be available as a deterministic baseline adaptation layer.
 - Optional convolution should remain a separate post-process after reconstruction, with dry/wet control, output safety normalization, and an explicit audio source from either the original target file or a separate WAV file.
-- Future ambisonics rendering should be enabled only through an explicit external JSON positioning spec with trajectory and jitter controls.
+- Future ambisonics rendering should be enabled only through an explicit external JSON positioning spec with waypoint time stamps, per-segment curve metadata, and separate jitter-cloud controls.
 
 ## Active dependencies
 - `criterion` (dev): stable microbenchmark harness for descriptor extraction and later hot loops.
 - `hound`: narrow-scope WAV reader/writer for offline baseline audio I/O.
 - `rustfft`: stable FFT implementation for spectral descriptor extraction.
 - `serde`: derive `Serialize`/`Deserialize` for explicit config types.
-- `serde_json`: parse explicit rendering-side JSON specs for future ambisonics positioning input.
+- `serde_json`: parse explicit rendering-side JSON specs for future ambisonics trajectory and jitter input.

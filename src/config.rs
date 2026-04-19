@@ -460,15 +460,60 @@ impl StereoRouting {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmbisonicsCoordinateSpace {
+    Cartesian,
+}
+
+impl Default for AmbisonicsCoordinateSpace {
+    fn default() -> Self {
+        Self::Cartesian
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmbisonicsCurve {
+    Hold,
+    Linear,
+    CatmullRom,
+}
+
+impl Default for AmbisonicsCurve {
+    fn default() -> Self {
+        Self::Linear
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum AmbisonicsJitterMode {
+    Gaussian,
+}
+
+impl Default for AmbisonicsJitterMode {
+    fn default() -> Self {
+        Self::Gaussian
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AmbisonicsPositioningSpec {
-    trajectory: Vec<AmbisonicsTrajectoryWaypoint>,
-    jitter: AmbisonicsPositionJitter,
+pub struct AmbisonicsPositioningSpec {
+    #[serde(default)]
+    pub space: AmbisonicsCoordinateSpace,
+    #[serde(default)]
+    #[serde(rename = "loop")]
+    pub loop_enabled: bool,
+    #[serde(default)]
+    pub default_curve: AmbisonicsCurve,
+    pub trajectory: Vec<AmbisonicsTrajectoryWaypoint>,
+    pub jitter: AmbisonicsPositionJitter,
 }
 
 impl AmbisonicsPositioningSpec {
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         if self.trajectory.is_empty() {
             return Err(
                 "ambisonics positioning trajectory must contain at least one waypoint".to_string(),
@@ -501,28 +546,37 @@ impl AmbisonicsPositioningSpec {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AmbisonicsTrajectoryWaypoint {
-    time_ms: u32,
-    azimuth_deg: f32,
-    elevation_deg: f32,
-    distance: f32,
+pub struct AmbisonicsTrajectoryWaypoint {
+    pub time_ms: u32,
+    pub position: AmbisonicsCartesianPosition,
+    #[serde(default)]
+    pub to_next: Option<AmbisonicsSegmentSpec>,
 }
 
 impl AmbisonicsTrajectoryWaypoint {
     fn validate(&self) -> Result<(), String> {
-        if !self.azimuth_deg.is_finite()
-            || !self.elevation_deg.is_finite()
-            || !self.distance.is_finite()
-        {
-            return Err("ambisonics positioning waypoints must contain finite values".to_string());
+        self.position.validate()?;
+        if let Some(to_next) = &self.to_next {
+            to_next.validate()?;
         }
-        if !(-90.0..=90.0).contains(&self.elevation_deg) {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmbisonicsCartesianPosition {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl AmbisonicsCartesianPosition {
+    fn validate(&self) -> Result<(), String> {
+        if !self.x.is_finite() || !self.y.is_finite() || !self.z.is_finite() {
             return Err(
-                "ambisonics positioning elevation_deg must be within -90.0..=90.0".to_string(),
+                "ambisonics positioning waypoints must contain finite cartesian values".to_string(),
             );
-        }
-        if self.distance < 0.0 {
-            return Err("ambisonics positioning distance must be >= 0.0".to_string());
         }
 
         Ok(())
@@ -531,29 +585,78 @@ impl AmbisonicsTrajectoryWaypoint {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AmbisonicsPositionJitter {
-    azimuth_deg: f32,
-    elevation_deg: f32,
-    distance: f32,
+pub struct AmbisonicsSegmentSpec {
+    #[serde(default)]
+    pub curve: AmbisonicsCurve,
+    pub tension: Option<f32>,
 }
 
-impl AmbisonicsPositionJitter {
+impl AmbisonicsSegmentSpec {
     fn validate(&self) -> Result<(), String> {
-        if !self.azimuth_deg.is_finite()
-            || !self.elevation_deg.is_finite()
-            || !self.distance.is_finite()
-        {
-            return Err("ambisonics positioning jitter must contain finite values".to_string());
-        }
-        if self.azimuth_deg < 0.0 || self.elevation_deg < 0.0 || self.distance < 0.0 {
-            return Err("ambisonics positioning jitter values must be >= 0.0".to_string());
+        if let Some(tension) = self.tension {
+            if self.curve != AmbisonicsCurve::CatmullRom {
+                return Err(
+                    "ambisonics positioning tension is only valid with curve = catmull-rom"
+                        .to_string(),
+                );
+            }
+            if !tension.is_finite() {
+                return Err("ambisonics positioning tension must be finite".to_string());
+            }
+            if !(0.0..=1.0).contains(&tension) {
+                return Err("ambisonics positioning tension must be within 0.0..=1.0".to_string());
+            }
         }
 
         Ok(())
     }
 }
 
-fn load_ambisonics_positioning_spec<P>(path: P) -> Result<AmbisonicsPositioningSpec, String>
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmbisonicsPositionJitter {
+    #[serde(default)]
+    pub mode: AmbisonicsJitterMode,
+    #[serde(default)]
+    pub per_grain: bool,
+    pub seed: Option<u64>,
+    pub spread: AmbisonicsCartesianSpread,
+    #[serde(default)]
+    pub smoothing_ms: u32,
+}
+
+impl AmbisonicsPositionJitter {
+    fn validate(&self) -> Result<(), String> {
+        self.spread.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AmbisonicsCartesianSpread {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+impl AmbisonicsCartesianSpread {
+    fn validate(&self) -> Result<(), String> {
+        if !self.x.is_finite() || !self.y.is_finite() || !self.z.is_finite() {
+            return Err(
+                "ambisonics positioning jitter spread must contain finite values".to_string(),
+            );
+        }
+        if self.x < 0.0 || self.y < 0.0 || self.z < 0.0 {
+            return Err("ambisonics positioning jitter spread values must be >= 0.0".to_string());
+        }
+
+        Ok(())
+    }
+}
+
+pub(crate) fn load_ambisonics_positioning_spec<P>(
+    path: P,
+) -> Result<AmbisonicsPositioningSpec, String>
 where
     P: AsRef<Path>,
 {
@@ -822,11 +925,19 @@ mod tests {
         let json_path = fixture.write_text_file(
             "positioning.json",
             r#"{
+  "space": "cartesian",
+  "default_curve": "linear",
   "trajectory": [],
   "jitter": {
-    "azimuth_deg": 2.0,
-    "elevation_deg": 1.0,
-    "distance": 0.1
+    "mode": "gaussian",
+    "per_grain": true,
+    "seed": 7,
+    "spread": {
+      "x": 0.08,
+      "y": 0.08,
+      "z": 0.04
+    },
+    "smoothing_ms": 80
   }
 }"#,
         );
@@ -848,24 +959,52 @@ mod tests {
         let json_path = fixture.write_text_file(
             "positioning.json",
             r#"{
+  "space": "cartesian",
+  "loop": false,
+  "default_curve": "linear",
   "trajectory": [
     {
       "time_ms": 0,
-      "azimuth_deg": 0.0,
-      "elevation_deg": 0.0,
-      "distance": 1.0
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      },
+      "to_next": {
+        "curve": "linear"
+      }
     },
     {
       "time_ms": 250,
-      "azimuth_deg": 30.0,
-      "elevation_deg": 10.0,
-      "distance": 1.2
+      "position": {
+        "x": 0.6,
+        "y": 0.2,
+        "z": 0.1
+      },
+      "to_next": {
+        "curve": "catmull-rom",
+        "tension": 0.5
+      }
+    },
+    {
+      "time_ms": 600,
+      "position": {
+        "x": -0.3,
+        "y": 0.4,
+        "z": 0.2
+      }
     }
   ],
   "jitter": {
-    "azimuth_deg": 2.0,
-    "elevation_deg": 1.0,
-    "distance": 0.1
+    "mode": "gaussian",
+    "per_grain": true,
+    "seed": 42,
+    "spread": {
+      "x": 0.08,
+      "y": 0.08,
+      "z": 0.04
+    },
+    "smoothing_ms": 80
   }
 }"#,
         );
@@ -875,6 +1014,88 @@ mod tests {
             json_path.to_string_lossy().into_owned();
 
         assert_eq!(config.validate(), Ok(()));
+    }
+
+    #[test]
+    fn ambisonics_rejects_non_increasing_waypoint_times() {
+        let fixture = TempFixtureDir::new();
+        let json_path = fixture.write_text_file(
+            "positioning.json",
+            r#"{
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      }
+    },
+    {
+      "time_ms": 0,
+      "position": {
+        "x": 0.2,
+        "y": 0.8,
+        "z": 0.1
+      }
+    }
+  ],
+  "jitter": {
+    "spread": {
+      "x": 0.08,
+      "y": 0.08,
+      "z": 0.04
+    }
+  }
+}"#,
+        );
+        let mut config = AppConfig::default();
+        config.rendering.mode = RenderMode::AmbisonicsReserved;
+        config.rendering.ambisonics.positioning_json_path =
+            json_path.to_string_lossy().into_owned();
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "ambisonics positioning trajectory time_ms must be strictly increasing"
+        );
+    }
+
+    #[test]
+    fn ambisonics_rejects_negative_jitter_spread() {
+        let fixture = TempFixtureDir::new();
+        let json_path = fixture.write_text_file(
+            "positioning.json",
+            r#"{
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": {
+        "x": 0.0,
+        "y": 1.0,
+        "z": 0.0
+      }
+    }
+  ],
+  "jitter": {
+    "spread": {
+      "x": -0.08,
+      "y": 0.08,
+      "z": 0.04
+    }
+  }
+}"#,
+        );
+        let mut config = AppConfig::default();
+        config.rendering.mode = RenderMode::AmbisonicsReserved;
+        config.rendering.ambisonics.positioning_json_path =
+            json_path.to_string_lossy().into_owned();
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(
+            error,
+            "ambisonics positioning jitter spread values must be >= 0.0"
+        );
     }
 
     struct TempFixtureDir {

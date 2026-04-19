@@ -63,6 +63,48 @@
 - `synthesis`: overlap-add windowing and scheduling. Current `window` baseline is `hann`.
 - `rendering`: output sample rate, output routing, and optional post-convolution. Corpus and target inputs are resampled to `output_sample_rate` before segmentation, analysis, and synthesis. When post-convolution is enabled, the convolution audio comes either from the original target file (`source = "target"`) or from an explicit WAV path (`source = "audio-file"` with `audio_path`). Ambisonics stays reserved behind explicit JSON positioning input.
 
+## Ambisonics positioning JSON
+`rendering.ambisonics.positioning_json_path` points to a separate JSON file owned by the rendering stage. The baseline schema keeps the deterministic center trajectory separate from the cloud jitter around that trajectory.
+
+```json
+{
+  "space": "cartesian",
+  "loop": false,
+  "default_curve": "linear",
+  "trajectory": [
+    {
+      "time_ms": 0,
+      "position": { "x": 0.0, "y": 1.0, "z": 0.0 },
+      "to_next": { "curve": "linear" }
+    },
+    {
+      "time_ms": 1200,
+      "position": { "x": 0.6, "y": 0.2, "z": 0.1 },
+      "to_next": { "curve": "catmull-rom", "tension": 0.5 }
+    },
+    {
+      "time_ms": 2600,
+      "position": { "x": -0.3, "y": 0.4, "z": 0.2 }
+    }
+  ],
+  "jitter": {
+    "mode": "gaussian",
+    "per_grain": true,
+    "seed": 42,
+    "spread": { "x": 0.08, "y": 0.08, "z": 0.04 },
+    "smoothing_ms": 80
+  }
+}
+```
+
+- `space`: current baseline accepts only `cartesian`.
+- `loop`: when `true`, the trajectory is intended to wrap after the last waypoint; rendering is still reserved, so this is validated and carried forward only.
+- `default_curve`: fallback segment curve when a waypoint omits `to_next`.
+- `trajectory[*].to_next.curve`: allowed values are `hold`, `linear`, `catmull-rom`.
+- `trajectory[*].to_next.tension`: optional and only valid with `curve = "catmull-rom"`.
+- `jitter.spread`: non-negative cloud radius per axis around the deterministic path center.
+- `jitter.seed`: explicit deterministic seed for future spatial jitter generation.
+
 ## Validation rules
 - Unknown JSON fields are rejected at every config level.
 - `corpus.grain_size_ms > 0`
@@ -77,6 +119,10 @@
 - `post_convolution.dry_mix` and `wet_mix` must stay within `0.0..=1.0`
 - enabled `post_convolution` with `source = "audio-file"` requires a non-empty `audio_path`
 - `rendering.mode = "ambisonics-reserved"` requires a readable positioning JSON with a non-empty strictly increasing trajectory starting at `time_ms = 0`
+- ambisonics waypoint positions must contain finite `x`, `y`, `z` values
+- ambisonics `default_curve` and `to_next.curve` must deserialize to known enum values
+- ambisonics `to_next.tension` must be finite, within `0.0..=1.0`, and only appear with `curve = "catmull-rom"`
+- ambisonics jitter spread values must be finite and `>= 0.0`
 
 ## Run-time requirements
 - `run` requires a non-empty `corpus.root`.
