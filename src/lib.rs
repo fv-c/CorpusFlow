@@ -6,6 +6,7 @@ pub mod corpus;
 pub mod descriptor;
 pub mod index;
 pub mod matching;
+pub mod micro_adaptation;
 pub mod rendering;
 pub mod synthesis;
 pub mod target;

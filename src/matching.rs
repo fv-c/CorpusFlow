@@ -470,6 +470,7 @@ mod tests {
                 .map(|(index, descriptor)| TargetAnalysisFrame {
                     start_frame: index * 50,
                     len_frames: 100,
+                    rms: 1.0,
                     raw_descriptor: descriptor,
                     normalized_descriptor: descriptor,
                 })

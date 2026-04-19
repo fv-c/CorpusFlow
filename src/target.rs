@@ -65,6 +65,7 @@ pub struct TargetInput {
 pub struct TargetAnalysisFrame {
     pub start_frame: usize,
     pub len_frames: usize,
+    pub rms: f32,
     pub raw_descriptor: DescriptorVector,
     pub normalized_descriptor: DescriptorVector,
 }
@@ -157,6 +158,7 @@ pub fn analyze_target_input(
         frames.push(TargetAnalysisFrame {
             start_frame: frame.start_frame,
             len_frames: frame.len_frames,
+            rms: root_mean_square(&mono_samples[start..end]),
             raw_descriptor,
             normalized_descriptor: raw_descriptor,
         });
@@ -213,6 +215,16 @@ fn mixdown_to_mono(buffer: &AudioBuffer) -> Vec<f32> {
 fn ms_to_frames(sample_rate: u32, milliseconds: u32) -> usize {
     let rounded = ((sample_rate as u64 * milliseconds as u64) + 500) / 1000;
     rounded.max(1) as usize
+}
+
+fn root_mean_square(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+
+    let mean_square =
+        samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32;
+    mean_square.sqrt()
 }
 
 #[cfg(test)]
@@ -300,6 +312,7 @@ mod tests {
         assert_eq!(analysis.frame_size_frames, 100);
         assert_eq!(analysis.hop_size_frames, 50);
         assert_eq!(analysis.frames.len(), 2);
+        assert!(analysis.frames.iter().all(|frame| frame.rms == 0.5));
         assert!(
             analysis
                 .frames

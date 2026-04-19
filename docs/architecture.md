@@ -19,6 +19,7 @@
 - `target.rs`: target loading, frame planning, mono analysis, descriptor pass
 - `descriptor.rs`: descriptor spec skeleton
 - `matching.rs`: greedy baseline matcher with target and transition costs
+- `micro_adaptation.rs`: optional post-selection gain and carrier-envelope hooks
 - `synthesis.rs`: synthesis skeleton
 - `rendering.rs`: output/render skeleton
 

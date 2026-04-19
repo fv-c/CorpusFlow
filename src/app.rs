@@ -26,11 +26,13 @@ fn run_message(config: &AppConfig) -> String {
     let descriptor = baseline_descriptor_spec();
 
     format!(
-        "CorpusFlow scaffold ready: grain={}ms hop={}ms descriptor_dims={} matcher(alpha={}, beta={})",
+        "CorpusFlow scaffold ready: grain={}ms hop={}ms descriptor_dims={} matcher(alpha={}, beta={}) micro(gain={}, envelope={})",
         config.corpus.grain_size_ms,
         config.corpus.grain_hop_ms,
         descriptor.dimensions,
         config.matching.alpha,
-        config.matching.beta
+        config.matching.beta,
+        config.micro_adaptation.gain.as_str(),
+        config.micro_adaptation.envelope.as_str(),
     )
 }

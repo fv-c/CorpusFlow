@@ -5,6 +5,7 @@ pub struct AppConfig {
     pub corpus: CorpusConfig,
     pub target: TargetConfig,
     pub matching: MatchingConfig,
+    pub micro_adaptation: MicroAdaptationConfig,
     pub synthesis: SynthesisConfig,
     pub rendering: RenderingConfig,
 }
@@ -15,6 +16,7 @@ impl Default for AppConfig {
             corpus: CorpusConfig::default(),
             target: TargetConfig::default(),
             matching: MatchingConfig::default(),
+            micro_adaptation: MicroAdaptationConfig::default(),
             synthesis: SynthesisConfig::default(),
             rendering: RenderingConfig::default(),
         }
@@ -49,14 +51,16 @@ impl AppConfig {
 
     pub fn summary(&self) -> String {
         format!(
-            "corpus(grain={}ms hop={}ms) target(frame={}ms hop={}ms) synthesis(output_hop={}ms) matching(alpha={}, beta={}) rendering({})",
+            "corpus(grain={}ms hop={}ms) target(frame={}ms hop={}ms) matching(alpha={}, beta={}) micro(gain={}, envelope={}) synthesis(output_hop={}ms) rendering({})",
             self.corpus.grain_size_ms,
             self.corpus.grain_hop_ms,
             self.target.frame_size_ms,
             self.target.hop_size_ms,
-            self.synthesis.output_hop_ms,
             self.matching.alpha,
             self.matching.beta,
+            self.micro_adaptation.gain.as_str(),
+            self.micro_adaptation.envelope.as_str(),
+            self.synthesis.output_hop_ms,
             self.rendering.mode.as_str(),
         )
     }
@@ -120,6 +124,21 @@ impl Default for MatchingConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MicroAdaptationConfig {
+    pub gain: GainAdaptationMode,
+    pub envelope: EnvelopeAdaptationMode,
+}
+
+impl Default for MicroAdaptationConfig {
+    fn default() -> Self {
+        Self {
+            gain: GainAdaptationMode::Off,
+            envelope: EnvelopeAdaptationMode::Off,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SynthesisConfig {
     pub window: WindowKind,
     pub output_hop_ms: u32,
@@ -153,6 +172,36 @@ pub enum WindowKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GainAdaptationMode {
+    Off,
+    MatchTargetRms,
+}
+
+impl GainAdaptationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::MatchTargetRms => "match-target-rms",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnvelopeAdaptationMode {
+    Off,
+    InheritCarrierRms,
+}
+
+impl EnvelopeAdaptationMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::InheritCarrierRms => "inherit-carrier-rms",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RenderMode {
     Mono,
     Stereo,
@@ -171,7 +220,7 @@ impl RenderMode {
 
 #[cfg(test)]
 mod tests {
-    use super::{AppConfig, MatchingConfig};
+    use super::{AppConfig, EnvelopeAdaptationMode, GainAdaptationMode, MatchingConfig};
 
     #[test]
     fn default_config_is_valid() {
@@ -210,5 +259,16 @@ mod tests {
 
         let error = config.validate().expect_err("config should be invalid");
         assert_eq!(error, "synthesis output_hop_ms must be > 0");
+    }
+
+    #[test]
+    fn summary_includes_micro_adaptation_modes() {
+        let mut config = AppConfig::default();
+        config.micro_adaptation.gain = GainAdaptationMode::MatchTargetRms;
+        config.micro_adaptation.envelope = EnvelopeAdaptationMode::InheritCarrierRms;
+
+        let summary = config.summary();
+
+        assert!(summary.contains("micro(gain=match-target-rms, envelope=inherit-carrier-rms)"));
     }
 }
