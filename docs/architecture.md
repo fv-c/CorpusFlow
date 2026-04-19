@@ -27,6 +27,8 @@
 - Data moves linearly by stage; later caches/indexes stay explicit.
 - Matching owns cost composition, not descriptor extraction or synthesis.
 - Rendering is separate from synthesis so spatial modes can evolve independently.
+- Corpus grain hop, target analysis hop, and synthesis output hop should remain separate controls.
+- Irregular overlap belongs to synthesis scheduling, not corpus segmentation or baseline matching.
 
 ## Active dependencies
 - `criterion` (dev): stable microbenchmark harness for descriptor extraction and later hot loops.

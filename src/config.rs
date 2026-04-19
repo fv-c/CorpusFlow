@@ -35,8 +35,8 @@ impl AppConfig {
         if !self.matching.alpha.is_finite() || !self.matching.beta.is_finite() {
             return Err("matching weights must be finite".to_string());
         }
-        if self.synthesis.overlap_percent > 100 {
-            return Err("synthesis overlap_percent must be <= 100".to_string());
+        if self.synthesis.output_hop_ms == 0 {
+            return Err("synthesis output_hop_ms must be > 0".to_string());
         }
 
         Ok(())
@@ -44,11 +44,12 @@ impl AppConfig {
 
     pub fn summary(&self) -> String {
         format!(
-            "corpus(grain={}ms hop={}ms) target(frame={}ms hop={}ms) matching(alpha={}, beta={}) rendering({})",
+            "corpus(grain={}ms hop={}ms) target(frame={}ms hop={}ms) synthesis(output_hop={}ms) matching(alpha={}, beta={}) rendering({})",
             self.corpus.grain_size_ms,
             self.corpus.grain_hop_ms,
             self.target.frame_size_ms,
             self.target.hop_size_ms,
+            self.synthesis.output_hop_ms,
             self.matching.alpha,
             self.matching.beta,
             self.rendering.mode.as_str(),
@@ -110,14 +111,14 @@ impl Default for MatchingConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SynthesisConfig {
     pub window: WindowKind,
-    pub overlap_percent: u8,
+    pub output_hop_ms: u32,
 }
 
 impl Default for SynthesisConfig {
     fn default() -> Self {
         Self {
             window: WindowKind::Hann,
-            overlap_percent: 50,
+            output_hop_ms: 50,
         }
     }
 }
@@ -186,5 +187,14 @@ mod tests {
 
         let error = config.validate().expect_err("config should be invalid");
         assert_eq!(error, "matching weights must be finite");
+    }
+
+    #[test]
+    fn invalid_synthesis_output_hop_is_rejected() {
+        let mut config = AppConfig::default();
+        config.synthesis.output_hop_ms = 0;
+
+        let error = config.validate().expect_err("config should be invalid");
+        assert_eq!(error, "synthesis output_hop_ms must be > 0");
     }
 }
