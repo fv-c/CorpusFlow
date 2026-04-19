@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::Path,
 };
 
@@ -22,11 +22,20 @@ where
     S: Into<String>,
 {
     let stderr = io::stderr();
+    let progress_mode = if stderr.is_terminal() {
+        ProgressMode::Interactive
+    } else {
+        ProgressMode::Stream
+    };
     let mut progress = stderr.lock();
-    run_with_progress(args, &mut progress)
+    run_with_progress(args, &mut progress, progress_mode)
 }
 
-fn run_with_progress<I, S, W>(args: I, progress: &mut W) -> Result<String, String>
+fn run_with_progress<I, S, W>(
+    args: I,
+    progress: &mut W,
+    progress_mode: ProgressMode,
+) -> Result<String, String>
 where
     I: IntoIterator<Item = S>,
     S: Into<String>,
@@ -41,7 +50,7 @@ where
             output_path,
         } => {
             let config = load_config(config_path.as_deref())?;
-            run_pipeline(&config, &output_path, progress)?
+            run_pipeline(&config, &output_path, progress, progress_mode)?
         }
         CliCommand::ShowConfig => AppConfig::default().to_pretty_json()?,
         CliCommand::ValidateConfig { config_path } => validate_config_message(&config_path)?,
@@ -67,6 +76,7 @@ fn run_pipeline<W>(
     config: &AppConfig,
     output_path: &str,
     progress: &mut W,
+    progress_mode: ProgressMode,
 ) -> Result<String, String>
 where
     W: Write,
@@ -81,7 +91,7 @@ where
         return Err("run requires target.path to be set".to_string());
     }
 
-    let mut progress_bar = PipelineProgress::new(progress, 7);
+    let mut progress_bar = PipelineProgress::new(progress, 7, progress_mode);
     progress_bar.emit("starting pipeline");
 
     let corpus_plan = CorpusPlan::from_config(&config.corpus);
@@ -156,23 +166,27 @@ fn validate_config_message(config_path: &str) -> Result<String, String> {
     Ok(format!("config valid: {config_path}\n{}", config.summary()))
 }
 
-struct PipelineProgress<'a, W> {
+struct PipelineProgress<'a, W: Write> {
     writer: &'a mut W,
     total_steps: usize,
     completed_steps: usize,
+    mode: ProgressMode,
+    needs_newline: bool,
 }
 
 impl<'a, W> PipelineProgress<'a, W>
 where
     W: Write,
 {
-    const BAR_WIDTH: usize = 28;
+    const BAR_WIDTH: usize = 24;
 
-    fn new(writer: &'a mut W, total_steps: usize) -> Self {
+    fn new(writer: &'a mut W, total_steps: usize, mode: ProgressMode) -> Self {
         Self {
             writer,
             total_steps,
             completed_steps: 0,
+            mode,
+            needs_newline: false,
         }
     }
 
@@ -182,21 +196,73 @@ where
     }
 
     fn emit(&mut self, label: &str) {
-        let filled = if self.total_steps == 0 {
-            0
-        } else {
-            self.completed_steps * Self::BAR_WIDTH / self.total_steps
-        };
-        let empty = Self::BAR_WIDTH.saturating_sub(filled);
-        let bar = format!("{}{}", "#".repeat(filled), ".".repeat(empty));
+        let line = self.render_line(label);
 
-        let _ = writeln!(
-            self.writer,
-            "[{bar}] {}/{} {}",
-            self.completed_steps, self.total_steps, label
-        );
+        match self.mode {
+            ProgressMode::Interactive => {
+                let _ = write!(self.writer, "\r\x1b[2K{line}");
+                self.needs_newline = true;
+                if self.completed_steps == self.total_steps {
+                    let _ = writeln!(self.writer);
+                    self.needs_newline = false;
+                }
+            }
+            ProgressMode::Stream => {
+                let _ = writeln!(self.writer, "{line}");
+            }
+        }
         let _ = self.writer.flush();
     }
+
+    fn render_line(&self, label: &str) -> String {
+        let percent = if self.total_steps == 0 {
+            100
+        } else {
+            self.completed_steps * 100 / self.total_steps
+        };
+        let bar = self.render_bar();
+
+        format!(
+            "CorpusFlow {:>3}% [{}] {}/{} {}",
+            percent, bar, self.completed_steps, self.total_steps, label
+        )
+    }
+
+    fn render_bar(&self) -> String {
+        if self.total_steps == 0 {
+            return "=".repeat(Self::BAR_WIDTH);
+        }
+
+        if self.completed_steps >= self.total_steps {
+            return "=".repeat(Self::BAR_WIDTH);
+        }
+
+        let filled = self.completed_steps * Self::BAR_WIDTH / self.total_steps;
+        let mut bar = String::with_capacity(Self::BAR_WIDTH);
+        bar.push_str(&"=".repeat(filled));
+        bar.push('>');
+        let trailing = Self::BAR_WIDTH.saturating_sub(filled + 1);
+        bar.push_str(&"-".repeat(trailing));
+        bar
+    }
+}
+
+impl<W> Drop for PipelineProgress<'_, W>
+where
+    W: Write,
+{
+    fn drop(&mut self) {
+        if self.needs_newline {
+            let _ = writeln!(self.writer);
+            let _ = self.writer.flush();
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProgressMode {
+    Interactive,
+    Stream,
 }
 
 #[cfg(test)]
@@ -208,7 +274,7 @@ mod tests {
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    use super::{run, run_with_progress};
+    use super::{ProgressMode, run, run_with_progress};
     use crate::audio::read_wav;
     use hound::{SampleFormat, WavSpec, WavWriter};
 
@@ -430,6 +496,7 @@ mod tests {
                 output_path.to_string_lossy().as_ref(),
             ],
             &mut progress,
+            ProgressMode::Stream,
         )
         .expect("run should succeed");
         let progress = String::from_utf8(progress).expect("progress output should be utf-8");
@@ -439,12 +506,42 @@ mod tests {
         assert!(output.contains("render complete:"));
         assert!(output.contains("corpus_sources=1"));
         assert!(output.contains("matched_steps=8"));
-        assert!(progress.contains("[............................] 0/7 starting pipeline"));
-        assert!(progress.contains("[############################] 7/7 output written"));
+        assert!(
+            progress.contains("CorpusFlow   0% [>-----------------------] 0/7 starting pipeline")
+        );
+        assert!(progress.contains("CorpusFlow 100% [========================] 7/7 output written"));
         assert!(progress.contains("4/7 target analyzed"));
         assert_eq!(rendered.channels, 2);
         assert_eq!(rendered.frame_count(), 8);
         assert!(rendered.samples.iter().any(|sample| sample.abs() > 0.0));
+    }
+
+    #[test]
+    fn interactive_progress_rewrites_the_same_line() {
+        let mut output = Vec::new();
+        let mut progress = super::PipelineProgress::new(&mut output, 2, ProgressMode::Interactive);
+
+        progress.emit("starting pipeline");
+        progress.advance("corpus loaded");
+        progress.advance("output written");
+        drop(progress);
+
+        let output = String::from_utf8(output).expect("progress output should be utf-8");
+
+        assert!(
+            output.contains(
+                "\r\x1b[2KCorpusFlow   0% [>-----------------------] 0/2 starting pipeline"
+            )
+        );
+        assert!(
+            output
+                .contains("\r\x1b[2KCorpusFlow  50% [============>-----------] 1/2 corpus loaded")
+        );
+        assert!(
+            output.contains(
+                "\r\x1b[2KCorpusFlow 100% [========================] 2/2 output written\n"
+            )
+        );
     }
 
     struct TempFixtureDir {
