@@ -62,7 +62,9 @@ cd CorpusFlow
 cargo build --release
 ```
 
-Per installare il binario localmente via Cargo:
+Il build produce il binario CLI in `target/release/corpusflow`.
+
+Per usare direttamente il comando `corpusflow` dalla shell, installare il binario localmente via Cargo:
 
 ```bash
 cargo install --path .
@@ -79,19 +81,19 @@ cargo test
 Stampare la configurazione canonica di default:
 
 ```bash
-cargo run -- show-config
+corpusflow show-config
 ```
 
 Validare un file JSON di configurazione:
 
 ```bash
-cargo run -- validate-config config.json
+corpusflow validate-config config.json
 ```
 
 Eseguire la pipeline end-to-end e scrivere il WAV finale:
 
 ```bash
-cargo run -- run --config config.json --output out/render.wav
+corpusflow run --config config.json --output out/render.wav
 ```
 
 Se il path di output contiene directory non ancora esistenti, CorpusFlow le crea automaticamente.
@@ -164,9 +166,9 @@ Per l'elenco completo di regole, enum e vincoli:
 
 1. Preparare una cartella di WAV mono per il corpus.
 2. Preparare un file WAV target.
-3. Esportare il default config con `cargo run -- show-config > config.json`.
+3. Esportare il default config con `corpusflow show-config > config.json`.
 4. Aggiornare `corpus.root` e `target.path`.
-5. Eseguire `cargo run -- run --config config.json --output out/render.wav`.
+5. Eseguire `corpusflow run --config config.json --output out/render.wav`.
 
 ## Benchmark e validazione
 
